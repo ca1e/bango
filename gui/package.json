@@ -1,0 +1,15 @@
+{
+  "name": "gomoku-protocol-gui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "五子棋 Gomocup 协议对弈 GUI：浏览器管理器 + 本地 TCP 桥接服务",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "mock": "node tools/mock-engine.js",
+    "test": "node test/forbidden.test.mjs && node test/protocol.test.mjs && node test/board.test.mjs"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

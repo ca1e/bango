@@ -1,0 +1,7 @@
+# compiled engine binaries (protocol requires the pbrain- prefix)
+pbrain-*
+
+# stray build artifacts from plain "go build"
+gomoku
+pbrain-*test
+.zcode/
