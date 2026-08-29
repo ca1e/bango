@@ -61,6 +61,40 @@ func (s *searcher) runKillSearch(budget time.Duration) int {
 	return -1
 }
 
+// runOppKillProbe is the defence layer behind the kill search (the reference
+// implementation's candidateMinmax net): it proves whether the OPPONENT —
+// given the move the engine is about to spend elsewhere — could force a win
+// with forcing moves alone. A proven opponent kill outranks the main search's
+// quiet choice: the probe returns the kill's principal threat point, but only
+// after occupying it verifiably dissolves the proof (otherwise the threat is
+// a multi-point fork the block cannot answer, and the main search's move
+// stands). Returns -1 when the opponent has no verifiable kill.
+func (s *searcher) runOppKillProbe(budget time.Duration) int {
+	if s.stoneCount() == 0 {
+		return -1
+	}
+	deadline := time.Time{}
+	if budget > 0 {
+		deadline = time.Now().Add(budget / 8) // defence gets a smaller slice
+	}
+	ks := &killSearch{s: s, deadline: deadline, attacker: playerOpp}
+	r := ks.search(playerOpp, vctDepth)
+	if r == nil {
+		return -1
+	}
+	t := r.move
+	if s.rule == RuleRenju && playerMe == s.blackSide && s.isForbidden(t, playerMe) {
+		return -1 // the block point is illegal for the engine: no defence here
+	}
+	s.makeMove(t, playerMe)
+	verified := ks.search(playerOpp, vctDepth) == nil
+	s.undoMove(t, playerMe)
+	if !verified {
+		return -1
+	}
+	return t
+}
+
 // search proves whether the attacker (always playerMe at the root; roles
 // alternate by parameter) can force a win within deep plies using only
 // forcing moves. Returns the kill sequence's first move, or nil.

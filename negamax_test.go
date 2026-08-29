@@ -2,20 +2,21 @@ package main
 
 import "testing"
 
-// TestNegamaxGoldenRoots pins the minimax→negamax migration: at the root the
-// side to move is always the engine, so the engine-perspective root score is
-// unchanged by the perspective rewrite and the negamax engine must reproduce
-// the pre-conversion two-role minimax values bit for bit. Baseline captured
-// from the minimax implementation immediately before the conversion.
-// LMR is disabled here: it is value-changing by design, so the golden gate
-// pins the value-preserving stack (incremental candidates, TT, aspiration).
+// TestNegamaxGoldenRoots pins the value-preserving search stack (incremental
+// candidates, TT, aspiration; LMR and the three-extending quiescence are
+// value-changing and disabled here). Baselines re-captured after the
+// candidate-ladder rung merge (both-role rungs, reference eval.js): the tree
+// now includes the opponent's own counter-threats at opponent-to-move nodes
+// and the engine's rush fours at live-four nodes, so exact values shifted —
+// mostly less optimistic (hidden replies visible), occasionally better (own
+// counter-fours searchable). The perspective-migration guarantee this test
+// was written for (negamax == two-role minimax on the same generator) is
+// re-checked by the equivalence suites in tt_test.go.
 //
 // Bonus-semantics pin (kept for the posEnabled=true A/B variant, off by
 // default): the pyramid bonus shifts every non-tactical score by its small
 // magnitude, 12/13 moves unchanged, ownThree d2 re-selects within a tie (83
-// vs 79, both live-four makers). Captured values: oppThree -100530/-600/
-// -19190, ownThree 100540@83, midgame11 4950/3060/50, blockedFour -620/
-// -32340/-34480, midgame15 -8470.
+// vs 79, both live-four makers).
 func TestNegamaxGoldenRoots(t *testing.T) {
 	diagrams := map[string]string{
 		"oppThree": `
@@ -78,17 +79,17 @@ func TestNegamaxGoldenRoots(t *testing.T) {
 	}{
 		{"oppThree", 2, -100450, 80},
 		{"oppThree", 4, -500, 80},
-		{"oppThree", 6, -19150, 80},
+		{"oppThree", 6, -32250, 80},
 		{"ownThree", 2, 100450, 79},
 		{"ownThree", 4, 9999998, 79},
 		{"ownThree", 6, 9999998, 79},
 		{"midgame11", 2, 4900, 60},
-		{"midgame11", 4, 3000, 48},
-		{"midgame11", 6, 0, 48},
+		{"midgame11", 4, 0, 48},
+		{"midgame11", 6, 2900, 48},
 		{"blockedFour", 2, -500, 75},
 		{"blockedFour", 4, -32250, 75},
-		{"blockedFour", 6, -34350, 75},
-		{"midgame15", 8, -8500, 64},
+		{"blockedFour", 6, -100700, 75},
+		{"midgame15", 8, -18350, 158},
 	}
 	for _, c := range cases {
 		var s *searcher

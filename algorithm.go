@@ -542,9 +542,20 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 	}
 
 	// kill search (tutorial ch.8): when the full search found no forced win,
-	// probe VCF/VCT for a deep forcing sequence the narrow search missed
-	if r := s.runKillSearch(budget); r >= 0 {
-		return r % n, r / n
+	// probe VCF/VCT for a deep forcing sequence the narrow search missed.
+	// A win the main search itself proved is kept as-is — the kill search's
+	// narrower forcing-only proof must never override it with an unproven
+	// alternative.
+	if prevScore < winScore-64 {
+		if r := s.runKillSearch(budget); r >= 0 {
+			return r % n, r / n
+		}
+		// opponent kill probe (reference candidateMinmax net): a proven
+		// opponent forcing win outranks the search's quiet choice — occupy
+		// its principal threat point when the block verifiably holds
+		if r := s.runOppKillProbe(budget); r >= 0 {
+			return r % n, r / n
+		}
 	}
 	return best % n, best / n
 }
@@ -1123,23 +1134,40 @@ func (s *searcher) genMovesRanked(limit, side int) ([]int, int) {
 		}
 	}
 
-	// priority assembly (tutorial ch.5 return ladder):
-	if len(fivesMe) > 0 {
-		return fivesMe, len(fivesMe) // our five: forced win, nothing else matters
-	}
-	if len(fivesOpp) > 0 {
-		return fivesOpp, len(fivesOpp) // their five: blocking is the only move
-	}
-	if len(liveFourMe) > 0 {
-		return liveFourMe, len(liveFourMe) // our live four wins next turn regardless
-	}
-	if len(liveFourOpp) > 0 {
-		// their live four: only our own rush fours (counter-fours) give any
-		// hope; otherwise forced to defend
-		if len(rushFourMe) > 0 {
-			return clamp(append(liveFourOpp, rushFourMe...), len(liveFourOpp)+len(rushFourMe))
+	// priority assembly (tutorial ch.5 return ladder). Every threat rung keeps
+	// BOTH roles' cells — the side to move's own winning points first, the
+	// opponent's right behind — the reference implementation's invariant
+	// (eval.js bySide/orderedSet). A single-side early return is only "forced"
+	// at an engine-to-move node; at an opponent-to-move node it hides the
+	// reply's own counter-win (the live-three growth points) and the search
+	// constructs phantom forced wins — the live-three-no-defence bug.
+	//
+	// rung 1 — fives: the mover completes five, or blocks the opponent's.
+	if len(fivesMe) > 0 || len(fivesOpp) > 0 {
+		self, other := fivesMe, fivesOpp
+		if side == playerOpp {
+			self, other = fivesOpp, fivesMe
 		}
-		return liveFourOpp, len(liveFourOpp)
+		out := make([]int, 0, len(self)+len(other))
+		out = append(out, self...)
+		out = append(out, other...)
+		return out, len(out)
+	}
+	// rung 2 — live fours: the mover's own wins the race; the opponent's are
+	// both the blocks a live three demands and, at an opponent-to-move node,
+	// the refutation of any phantom win. Rush fours ride along in the same
+	// rung like the reference's block fours.
+	if len(liveFourMe) > 0 || len(liveFourOpp) > 0 {
+		self, other := liveFourMe, liveFourOpp
+		if side == playerOpp {
+			self, other = liveFourOpp, liveFourMe
+		}
+		out := make([]int, 0, len(self)+len(other)+len(rushFourMe)+len(rushFourOpp))
+		out = append(out, self...)
+		out = append(out, other...)
+		out = append(out, rushFourMe...)
+		out = append(out, rushFourOpp...)
+		return clamp(out, len(out))
 	}
 	if len(rushFourMe) > 0 || len(rushFourOpp) > 0 {
 		fours := make([]int, 0, len(rushFourMe)+len(rushFourOpp)+

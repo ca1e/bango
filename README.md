@@ -123,6 +123,8 @@ gomoku/
 
 **候选数据增量化**：落子/提子唯一原语 `setStone` 在评估线缓存之外再维护三份增量状态——子数计数器、半径 2 / 半径 1 两张邻域引用计数表（取代每空格的 5×5 / 3×3 扫描）、以及**逐格逐向棋型值缓存**：`pointScore` 的单方向体（双向数子 + 开端 + 跳形折半）按 (格 × 4 向 × 2 方) 缓存，`setStone` 对 4 个方向上 ±9 步依赖窗口内的格子打脏标记（按方向×方共 8 位），读取时惰性重算。正确性门槛：[`TestShapeCacheExact`](shape_cache_test.go) 在随机 make/undo 序列上逐步断言缓存值与独立 oracle 逐位相等（含子数与两张邻域表）。搜索树与逐空格扫描版本逐位一致。
 
+**威胁梯子双保留不变量（2026-08 修复「活三不防」）**：[`genMovesRanked()`](algorithm.go) 的每一级威胁梯子都同时保留**双方**的格子——行棋方自己的获胜点在前、对方的紧随其后（参考实现 eval.js `bySide`/`orderedSet` 同款结构）。成五级合并 `fivesMe+fivesOpp`、活四级合并 `liveFourMe+liveFourOpp` 并让双方冲四随行；单边提前返回只在引擎行棋节点语义成立（"我方活四下一手必胜"），放到对方行棋节点会把对方自己的反击点整体隐藏——搜索据此构造出幻影必胜分（例如对方节点候选只剩挡点时，己方活四威胁被评成 `winScore−6`），根节点于是放弃挡对方的活三转头"进攻"（`TestGenMovesKeepsOpponentCounterThreats` / `TestGenMovesKeepsOpponentFive` / `TestAnswersLiveThreeWithOwnFourThreat` 回归）。附带收益：活四级随行对方的冲四点，`x.ooo` 跳四的缺口封堵点重新进入候选集。
+
 ### 5.3 静态局面评分（评估函数）
 
 [`evaluate()`](algorithm.go:404) 逐行扫描全部行、列、对角线，由 [`scoreLineFor()`](algorithm.go:452) 识别棋型并累计分值，最终评分 = 己方总分 − 对方总分。评分表：
@@ -188,6 +190,8 @@ gomoku/
 - **MAX 层（进攻方）**：只走己方的四（VCT 再加活三），任一分支成五即证明杀棋；
 - **MIN 层（防守方）**：走双方所有的四/活三（防守含反击）**与挡成五点、挡活三的成活四点**，有一种防住即证明不成杀。防守列表按 quiescence `fourThreats` 同款双视角构建——若只列防守方自己的四/活三，「没有反四」会被误读成「无法防守」，单纯冲四（挡一格即化解）就被当成必胜返回；成五点入防守列表（key 略低于己方成五，有五先赢）。**2026-08 二次修复**：VCT 模式下防守层再加「对方活三的成活四点」（key=冲四−1）——否则进攻方把活二长成新活三时，该三尚无成五点可挡、防守集合为空，连一个裸活二都被「证明」必胜并绕过主搜索直接落子（`TestKillSearchLiveTwoNotAKill` / `TestKillSearchFreshThreeDefended` 回归，真杀测试 7/7 保全；修复后 arena 50 局 26:24 优胜）。活四仍不可防、含强制挡四的真杀链不受影响；
 - **无假阳性**：搜索超出深度视作防守成功，绝不误报杀棋。
+- **已证胜局护栏（2026-08）**：主搜索已证明己方必胜（`prevScore ≥ winScore−64`）时整个杀棋搜索跳过——只看连续威胁的窄证明不得用未证明的替代着法覆盖主搜索的全宽胜解。
+- **对方杀棋探测（2026-08，参考实现 candidateMinmax 防线）**：己方 VCF/VCT 均未证明时，以对方为进攻方跑一次 VCT——若对方（假如下一手轮到它）存在连续威胁必胜，则**占据其主威胁点**，且落子后重探验证封锁确实瓦解证明才采纳（封不掉的多点叉威胁交回主搜索着法；连珠下黑方引擎落封锁点前查禁手，预算占 1/8）。`TestOppKillProbeBlocksOpponentKill` / `TestOppKillProbeLiveTwoNotAKill` / `TestOppKillProbeRejectsUnblockableFork` 回归。
 
 ### 5.10 门控 quiescence
 
@@ -250,7 +254,7 @@ PVS 是**值等价**变换——固定深度下根分值与着法与普通 Alpha
 ### 5.15 测试
 
 - [`negamax_test.go`](negamax_test.go)：13 组固定局面固定深度的根分值/着法黄金基线，保值搜索栈（LMR 关闭）必须逐位复现预置数值（根节点行棋方恒为引擎，分值语义不变）；
-- [`algorithm_test.go`](algorithm_test.go)：棋型评分表逐例校验；「一步成五必取」「对方四必挡」「活三必防」等战术断言；评估函数换边反对称校验；着法生成优先级阶梯（成五/活四独占返回）、Chebyshev-2 候选窗的边界裁剪与去重、`quietFrom` 强制段/安静尾巴排序契约；门控 quiescence 的门控等价、五威胁识别、lastP 未知保守展开、双活四/遗留四的静态兜底（`TestQuiescenceGateQuietPosition`/`TestQuiescenceSeesFive`/`TestQuiescenceLeftoverFourFallsBackToStatic` 等）；
+- [`algorithm_test.go`](algorithm_test.go)：棋型评分表逐例校验；「一步成五必取」「对方四必挡」「活三必防」等战术断言；评估函数换边反对称校验；着法生成优先级阶梯（成五/活四级双方合并、行棋方在前，`TestGenMovesKeepsOpponentCounterThreats` 回归「活三不防」根因）、Chebyshev-2 候选窗的边界裁剪与去重、`quietFrom` 强制段/安静尾巴排序契约；门控 quiescence 的门控等价、五威胁识别、lastP 未知保守展开、双活四/遗留四的静态兜底（`TestQuiescenceGateQuietPosition`/`TestQuiescenceSeesFive`/`TestQuiescenceLeftoverFourFallsBackToStatic` 等）；
 - [`tt_test.go`](tt_test.go)：Zobrist 增量哈希一致性、置换表读写/替换策略/同槽异锁碰撞保护、固定深度与**整轮迭代加深**的开/关等价性、`max_memory` 表收缩、剪枝安全性（开/关 Alpha-Beta 结果必须一致）与提速统计；PVS、杀手走法、历史启发各自的**开/关等价性**与提速统计；TT 胜利分区间守卫的正/反对照（区外深度条目直接复用、区内绝不作 cutoff，`TestTTWinScoreGuard`）；评估线缓存的位级属性测试与线 id 编解码契约（`TestEvalIncrementalExact`/`TestLineGatherRoundTrip`），含悔棋-重放型序列的 `TestEvalIncrementalWithTakebacks`；
 - [`shape_cache_test.go`](shape_cache_test.go)：增量候选状态（子数/邻域引用计数/逐向棋型值缓存）的正确性门槛——随机 make/undo 序列逐步断言缓存与独立 oracle、计数器与全盘重扫逐位相等；
 - [`time_test.go`](time_test.go)：`thinkBudget` 预算公式表驱动校验；极小预算下战术捷径必命中、真实思考必返回合法着法；deadline 过期后 `run` 回退且**置换表零写入**；中止节点（入口/移循环中）不入表；小预算中断后续搜满深度必须收敛到全新搜索的同分同着（`TestInterruptedThenResumedConsistent`）；
@@ -342,8 +346,9 @@ name="pbrain-bango", version="0.1", author="cale && GLM5.3", ai="minimax+alphabe
 
 ## 八、后续扩展方向
 
-搜索优化（PVS、门控 quiescence + 活三扩展、杀手/历史、置换表、评估缓存）、VCF/VCT 算杀、连珠禁手与开局库均已落地（见第五节）。**2026-08 第二轮优化**已完成五项（各自带验收，详见对应小节）：
+搜索优化（PVS、门控 quiescence + 活三扩展、杀手/历史、置换表、评估缓存）、VCF/VCT 算杀、连珠禁手与开局库均已落地（见第五节）。**2026-08 第二轮优化**已完成以下各项（各自带验收，详见对应小节）：
 
+- **威胁梯子双保留 + 对方杀棋探测**（5.2 / 5.9，2026-08 第三轮）：修复「活三不防」正确性缺陷——对方行棋节点上单边提前返回隐藏对方反击点、搜索构造幻影必胜并放弃防守；照参考实现 eval.js 把成五/活四级改为双方合并、行棋方在前，并新增对方杀棋探测（验证封锁才采纳）与已证胜局护栏。arena 对旧引擎 50 局 **50:0**（seed 7/13 各 30/20 局、300ms/手），回归测试 6 例
 - **VCT 防守层补挡活三**（5.9）：修复「活二级假杀」正确性缺陷，arena 26:24 优胜
 - **TT 跨手保留**：表由 `Engine` 持有、`START/RESTART` 同尺寸沿用、换尺寸/换预算重建；`newSearcherWithTT` 借用注入，跨手命中复用实测 12 节点 vs 1864 节点（1%），arena 28:22 优胜
 - **协议参数补齐**：`INFO max_depth`（钳制迭代加深上限）/ `max_node`（`limitHit()` 周期检查、走既有中断路径）已解析并挂钩，端到端测试覆盖

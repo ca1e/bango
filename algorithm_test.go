@@ -611,7 +611,9 @@ func TestGenMovesQuietTailContract(t *testing.T) {
 
 	// opponent three with one end blocked by our stone at (2,7): (7,7) makes
 	// the opponent a jump four (o.ooo scores above the live-four threshold)
-	// and (6,7) a plain rush four — the jump reply leads the forced segment
+	// and (6,7) a plain rush four — both defensive points lead the forced
+	// segment now that the live-four rung keeps the opponent's rush fours
+	// (the reference implementation's block fours ride along)
 	s = diagramToSearcher(t, `
 ...........
 ...........
@@ -626,11 +628,20 @@ func TestGenMovesQuietTailContract(t *testing.T) {
 ...........
 `)
 	moves, quietFrom = s.genMovesRanked(rootMoveLimit, playerMe)
-	if quietFrom != 1 {
-		t.Fatalf("threat position quietFrom=%d, want 1", quietFrom)
+	if quietFrom != 2 {
+		t.Fatalf("threat position quietFrom=%d, want 2", quietFrom)
 	}
 	if moves[0] != 7*11+7 {
 		t.Fatalf("forced reply = (%d,%d), want the jump-four point (7,7)", moves[0]%11, moves[0]/11)
+	}
+	foundGap := false
+	for _, m := range moves {
+		if m == 7*11+6 {
+			foundGap = true
+		}
+	}
+	if !foundGap {
+		t.Fatalf("rush-four block (6,7) missing from the forced segment: %v", moves)
 	}
 	for i := 0; i < quietFrom; i++ {
 		if s.pointScore(moves[i], playerOpp) < scoreRushFour {
@@ -740,5 +751,141 @@ func TestQuiescenceThreeGateQuietStaysFree(t *testing.T) {
 	t.Logf("quiet-leaf quiescence nodes with extension on: %d", on)
 	if on > 3 {
 		t.Fatalf("quiet leaf expanded %d nodes — the three gate is leaking", on)
+	}
+}
+
+// TestGenMovesKeepsOpponentCounterThreats: at an opponent-to-move node the
+// live-four rung must keep BOTH roles' points — the opponent's own growth
+// cells (its counter-win) as well as the engine's (the block targets), with
+// the mover's own first. The old single-side early return hid the
+// counter-win and the search constructed phantom forced wins — the
+// live-three-no-defence bug.
+func TestGenMovesKeepsOpponentCounterThreats(t *testing.T) {
+	s := diagramToSearcher(t, `
+...............
+...............
+...............
+...............
+...............
+...............
+...............
+.....ooo.......
+...............
+...............
+.....xxx.......
+...............
+...............
+...............
+...............
+`)
+	contains := func(moves []int, x, y int) bool {
+		for _, m := range moves {
+			if m == y*15+x {
+				return true
+			}
+		}
+		return false
+	}
+	oppMoves, _ := s.genMovesRanked(nodeMoveLimit, playerOpp)
+	// the opponent's own live-four points (row 10) must lead
+	if oppMoves[0]/15 != 10 {
+		t.Fatalf("opponent's own four points not first: first = (%d,%d)",
+			oppMoves[0]%15, oppMoves[0]/15)
+	}
+	for _, c := range [][2]int{{4, 10}, {8, 10}} {
+		if !contains(oppMoves, c[0], c[1]) {
+			t.Fatalf("opponent node lost its own live-four point (%d,%d): %v", c[0], c[1], oppMoves)
+		}
+	}
+	// the engine's live-four points stay searchable as block targets (row 7)
+	for _, c := range [][2]int{{4, 7}, {8, 7}} {
+		if !contains(oppMoves, c[0], c[1]) {
+			t.Fatalf("opponent node lost the block point (%d,%d): %v", c[0], c[1], oppMoves)
+		}
+	}
+	// mirrored at the engine-to-move node: own points present and first,
+	// opponent-three blocks present
+	myMoves, _ := s.genMovesRanked(nodeMoveLimit, playerMe)
+	if myMoves[0]/15 != 7 {
+		t.Fatalf("engine's own four points not first: first = (%d,%d)",
+			myMoves[0]%15, myMoves[0]/15)
+	}
+	for _, c := range [][2]int{{4, 7}, {8, 7}, {4, 10}, {8, 10}} {
+		if !contains(myMoves, c[0], c[1]) {
+			t.Fatalf("engine node lost live-four point (%d,%d): %v", c[0], c[1], myMoves)
+		}
+	}
+}
+
+// TestGenMovesKeepsOpponentFive: the five rung has the same both-role
+// invariant — at an opponent-to-move node with fours on both sides, the
+// opponent's own winning five point must not be hidden behind the forced
+// block of the engine's four.
+func TestGenMovesKeepsOpponentFive(t *testing.T) {
+	s := diagramToSearcher(t, `
+...............
+...............
+...............
+...............
+...............
+...............
+...............
+.....oooox.....
+...............
+...............
+.....xxxxo.....
+...............
+...............
+...............
+...............
+`)
+	// engine rush four row 7 (five point (4,7)), opponent rush four row 10
+	// (five point (4,10))
+	oppMoves, _ := s.genMovesRanked(nodeMoveLimit, playerOpp)
+	if oppMoves[0] != 10*15+4 {
+		t.Fatalf("opponent's own five point not first: first = (%d,%d)",
+			oppMoves[0]%15, oppMoves[0]/15)
+	}
+	foundBlock := false
+	for _, m := range oppMoves {
+		if m == 7*15+4 {
+			foundBlock = true
+		}
+	}
+	if !foundBlock {
+		t.Fatalf("engine-four block (4,7) missing: %v", oppMoves)
+	}
+	// engine-to-move node: our five (the win) leads
+	myMoves, _ := s.genMovesRanked(nodeMoveLimit, playerMe)
+	if myMoves[0] != 7*15+4 {
+		t.Fatalf("engine's own five point not first: first = (%d,%d)",
+			myMoves[0]%15, myMoves[0]/15)
+	}
+}
+
+// TestAnswersLiveThreeWithOwnFourThreat: regression for the live-three
+// no-defence bug. The engine has just played (9,7) building its own diagonal
+// four-threat, while the opponent holds a jump live three on the same
+// diagonal — (6,7),(7,6), gap (8,5), (9,4). The pre-fix search scored the
+// attacking line as a phantom forced win (winScore-6) because the opponent
+// node's candidate list hid (8,5), and declined to defend. The engine must
+// answer the three.
+func TestAnswersLiveThreeWithOwnFourThreat(t *testing.T) {
+	const n = 15
+	stones := [][3]int{
+		{7, 7, playerMe}, {6, 7, playerOpp}, {8, 6, playerMe}, {6, 8, playerOpp},
+		{6, 6, playerMe}, {8, 4, playerOpp}, {9, 6, playerMe}, {7, 6, playerOpp},
+		{6, 4, playerMe}, {9, 4, playerOpp},
+	}
+	b := make([]int, n*n)
+	for _, st := range stones {
+		b[st[1]*n+st[0]] = st[2]
+	}
+	s := newSearcher(n, b, 1<<22)
+	x, y := s.run(8, 0)
+	// answering cells of the jump three: the gap (8,5) kills it outright,
+	// the outer ends (5,8)/(10,3) leave only a blockable rush four
+	if !((x == 8 && y == 5) || (x == 5 && y == 8) || (x == 10 && y == 3)) {
+		t.Fatalf("move = (%d,%d), want an answer to the opponent's jump three", x, y)
 	}
 }
