@@ -315,9 +315,29 @@ func loadBookFile(path string) (*compiledBook, error) {
 	return nil, fmt.Errorf("unrecognized book format in %s", path)
 }
 
-// findBookPath locates the book file: protocol-compliant INFO folder first
-// (the brain must use its own subfolder there), then the executable's
-// directory as a read-only fallback. Empty when no file exists.
+// defaultBookFile is the shipped adoption book loaded when no book.json
+// exists at the protocol locations: the Gomocup 2026 freestyle 15×15
+// openings (tournament-grade lines — safe to adopt outright).
+const defaultBookFile = "gomocup-2026-15x15.json"
+
+// modeBookFile is the classic 26-mode guidance book (opening.go): engine-
+// grown continuations feed the opening prior's theory zone only.
+const modeBookFile = "classic-26-15x15.json"
+
+// loadModeBook compiles the classic mode guidance book; nil when missing or
+// incompatible.
+func loadModeBook() *compiledBook {
+	for _, path := range findDefaultBookPaths([]string{modeBookFile}) {
+		if cb, err := loadBookFile(path); err == nil {
+			return cb
+		}
+	}
+	return nil
+}
+
+// findBookPath locates a manager/legacy single-book file: the protocol
+// INFO folder's pbrain-bango/book.json first, then the executable's own
+// directory. Empty when neither exists (the shipped openbook defaults apply).
 func findBookPath(folder string) string {
 	var candidates []string
 	if folder != "" {
@@ -332,4 +352,55 @@ func findBookPath(folder string) string {
 		}
 	}
 	return ""
+}
+
+// findDefaultBookPaths returns the shipped openbook files (from names) that
+// exist: executable-directory copies first, then working-directory copies
+// (covers `go run .`, whose executable lives in a temp dir).
+func findDefaultBookPaths(names []string) []string {
+	var candidates []string
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		for _, f := range names {
+			candidates = append(candidates, filepath.Join(dir, "openbook", f))
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		for _, f := range names {
+			candidates = append(candidates, filepath.Join(cwd, "openbook", f))
+		}
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, p := range candidates {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// loadDefaultBooks compiles and merges the shipped openbook defaults; a file
+// whose rule or size is incompatible is skipped silently (the whole-book
+// disable on mismatch, matching the single-file behaviour).
+func loadDefaultBooks() *compiledBook {
+	var merged *compiledBook
+	for _, path := range findDefaultBookPaths([]string{defaultBookFile}) {
+		cb, err := loadBookFile(path)
+		if err != nil {
+			continue
+		}
+		if merged == nil {
+			merged = cb
+			continue
+		}
+		if err := merged.merge(cb); err != nil {
+			continue // incompatible rule/size: leave this file out
+		}
+	}
+	return merged
 }

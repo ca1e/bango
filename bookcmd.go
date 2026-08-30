@@ -43,6 +43,8 @@ func runBookCommand(args []string) {
 		}
 	case "build":
 		bookBuild(args[1:])
+	case "gen-classic":
+		bookGenClassic(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown book command %q\n", args[0])
 		os.Exit(2)
@@ -137,6 +139,11 @@ func bookValidate(path string) error {
 			}
 			seenPositions[key] = true
 			summary.Positions++
+			// clear the board: lines must validate independently, not on the
+			// leftovers of the previous opening
+			for _, st := range line {
+				s.setStone(st.y*src.Size+st.x, 0)
+			}
 		}
 	}
 	out, err := json.MarshalIndent(summary, "", "  ")
@@ -147,17 +154,60 @@ func bookValidate(path string) error {
 	return nil
 }
 
-// bookBuild grows a book from the empty board via fixed-depth search.
+// bookGenClassic emits the classic 26-mode seed lines (tengen + white reply
+// family × black's second move symmetry classes) as a book source file for
+// `book build --seeds`.
+func bookGenClassic(args []string) {
+	fs := flag.NewFlagSet("gen-classic", flag.ExitOnError)
+	out := fs.String("out", "classic-26-seeds.json", "output seed book file")
+	size := fs.Int("size", 15, "board size")
+	fs.Parse(args)
+	if *size < 5 {
+		fmt.Fprintln(os.Stderr, "book gen-classic: invalid size")
+		os.Exit(2)
+	}
+	seeds := classicOpeningSeeds(*size)
+	src := bookSourceJSON{
+		ID:               "bango-classic",
+		Name:             fmt.Sprintf("classic opening modes, %d seed lines (size %d)", len(seeds), *size),
+		Source:           "symmetry enumeration (5x5 box around the tengen)",
+		Rules:            "freestyle",
+		Size:             *size,
+		CoordinateSystem: "board-row-column",
+	}
+	for i, s := range seeds {
+		src.Openings = append(src.Openings, bookOpeningJSON{
+			ID: fmt.Sprintf("classic-%03d", i+1),
+			Coordinates: [][]int{
+				{s[0], s[1]}, {s[2], s[3]}, {s[4], s[5]},
+			},
+		})
+	}
+	data, err := json.MarshalIndent(src, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "book gen-classic:", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(*out, data, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "book gen-classic:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("gen-classic: %d mode seeds -> %s\n", len(seeds), *out)
+}
+
+// bookBuild grows a book via fixed-depth search — from the empty board, or
+// from the prefixes of a seed book (--seeds), e.g. the classic 26-mode lines.
 func bookBuild(args []string) {
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	out := fs.String("out", "book-built.json", "output book file")
 	rule := fs.Int("rule", RuleFreestyle, "rule code (0 freestyle, 4 renju)")
 	size := fs.Int("size", 15, "board size")
 	depth := fs.Int("depth", 8, "fixed search depth for scoring candidates")
-	maxPly := fs.Int("ply", 4, "opening depth in plies")
+	maxPly := fs.Int("ply", 4, "opening depth in plies (total, including seeds)")
 	width := fs.Int("width", 2, "candidates kept per position")
 	margin := fs.Int("margin", 0, "keep candidates scoring within this margin of the best")
 	budget := fs.Int("time", 60000, "total build budget in milliseconds")
+	seeds := fs.String("seeds", "", "seed book file: grow continuations from each line")
 	fs.Parse(args)
 
 	if *size < 5 || *depth < 2 || *maxPly < 2 || *width < 1 {
@@ -181,7 +231,14 @@ func bookBuild(args []string) {
 		emitted:   make(map[string]bool),
 		budgetEnd: time.Now().Add(time.Duration(*budget) * time.Millisecond),
 	}
-	b.walk(nil, nil)
+	if *seeds != "" {
+		if err := b.walkSeeds(*seeds, *size); err != nil {
+			fmt.Fprintln(os.Stderr, "book build:", err)
+			os.Exit(1)
+		}
+	} else {
+		b.walk(nil, nil)
+	}
 
 	src := bookSourceJSON{
 		ID:               "bango-built",
@@ -202,6 +259,70 @@ func bookBuild(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("built %s: %d openings, %d positions visited\n", *out, len(b.openings), len(b.visited))
+}
+
+// walkSeeds runs the growth walk from every seed line's position. The seed
+// stones are placed on the builder's board (and removed afterwards); the
+// walk's own make/undo pairs handle the continuation.
+func (b *bookBuilder) walkSeeds(path string, size int) error {
+	srcs, err := loadBookSources(path)
+	if err != nil {
+		return err
+	}
+	placed := 0
+	for si := range srcs {
+		src := &srcs[si]
+		if src.Size != size {
+			return fmt.Errorf("%s: source %q: size %d, want %d", path, src.ID, src.Size, size)
+		}
+		rule, ok := bookRuleCode(src.Rules)
+		if !ok || rule != b.s.rule {
+			return fmt.Errorf("%s: source %q: rules %q does not match the build rule", path, src.ID, src.Rules)
+		}
+		conv, err := bookConverter(src.CoordinateSystem)
+		if err != nil {
+			return fmt.Errorf("%s: source %q: %v", path, src.ID, err)
+		}
+		for _, op := range src.Openings {
+			var seq []bookStone
+			var cellPath []int
+			var placedCells []int
+			bad := false
+			for _, c := range op.Coordinates {
+				if len(c) != 2 {
+					return fmt.Errorf("%s: opening %q: bad coordinate %v", path, op.ID, c)
+				}
+				x, y := conv(c[0], c[1], size)
+				p := y*size + x
+				if b.s.b[p] != 0 {
+					bad = true // overlapping seed: skip the line
+					break
+				}
+				side := playerMe
+				if len(cellPath)%2 == 1 {
+					side = playerOpp
+				}
+				b.s.makeMove(p, side)
+				placedCells = append(placedCells, p)
+				seq = append(seq, bookStone{x, y, 1})
+				if len(seq)%2 == 0 {
+					seq[len(seq)-1].role = -1
+				}
+				cellPath = append(cellPath, p)
+			}
+			if !bad {
+				b.walk(seq, cellPath)
+			}
+			for i := len(placedCells) - 1; i >= 0; i-- {
+				b.s.setStone(placedCells[i], 0)
+				placed++
+			}
+		}
+	}
+	if placed == 0 {
+		return fmt.Errorf("%s: no seed lines walked", path)
+	}
+	return nil
 }
 
 // bookBuilder walks the opening tree, scoring candidates by fixed-depth
@@ -282,6 +403,12 @@ func (b *bookBuilder) walk(seq []bookStone, path []int) {
 		if time.Now().After(b.budgetEnd) {
 			b.emit(path)
 			return
+		}
+		if b.s.winsMove(k.move, side) {
+			// a completing five ends the opening: the line must end BEFORE
+			// the winning move — an opening book never contains a five
+			b.emit(path)
+			continue
 		}
 		b.s.makeMove(k.move, side)
 		st := bookStone{x: k.move % b.s.n, y: k.move / b.s.n, role: 1}

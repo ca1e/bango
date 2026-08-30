@@ -214,7 +214,7 @@ func (ks *killSearch) forcingMoves(side int) []threatMove {
 			out = append(out, threatMove{p, key})
 			continue
 		}
-		if ks.onlyFour && side == playerMe {
+		if ks.onlyFour && side == ks.attacker {
 			continue // VCF attacker: fours only
 		}
 		if mine >= scoreLiveThree {

@@ -52,7 +52,12 @@ type Engine struct {
 
 	// book is the lazily loaded opening book (nil when no book file is
 	// found or it fails to compile); bookLoaded memoizes the attempt.
+	// modeBook is the classic 26-mode guidance book: its replies feed the
+	// opening prior's theory zone only — it never adopts moves (the grown
+	// lines are shallower than the live search and lost arena games when
+	// followed outright).
 	book       *compiledBook
+	modeBook   *compiledBook
 	bookLoaded bool
 }
 
@@ -135,7 +140,10 @@ func (e *Engine) loadBook() *compiledBook {
 			if cb, err := loadBookFile(path); err == nil {
 				e.book = cb
 			}
+		} else {
+			e.book = loadDefaultBooks()
 		}
+		e.modeBook = loadModeBook()
 	}
 	return e.book
 }

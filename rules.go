@@ -192,7 +192,21 @@ func (s *searcher) bookCandidates() []bookCandidate {
 
 	cands := cb.movesFor(stones)
 	if len(cands) == 0 && len(stones) == 1 {
-		cands = cb.translatedFirstMoves(stones[0].x, stones[0].y)
+		// displacement generalization: a line's first→second offset only
+		// transfers meaningfully when it lands in the contact zone — remote
+		// displacements (some source lines reply 2-3 steps away) would
+		// produce geometrically arbitrary first replies and bypass the
+		// opening prior's classic-opening filter. Same criterion, applied
+		// before adoption.
+		for _, c := range cb.translatedFirstMoves(stones[0].x, stones[0].y) {
+			if s.classicOpeningPoint(c.move) {
+				cands = append(cands, c)
+			}
+		}
+		// displacement candidates carry a different position's geometry —
+		// they bias ordering but must not be adopted outright (arena: the
+		// weight-ordered pick measured 26:34 against the search choice)
+		s.bookViaTranslation = len(cands) > 0
 	}
 	if len(cands) == 0 {
 		return nil
@@ -213,30 +227,37 @@ func (s *searcher) bookCandidates() []bookCandidate {
 	return out
 }
 
-// hasThreatAtLeast reports whether either side already owns a shape worth at
-// least threshold (a live three or stronger) — the guard that keeps the book
-// out of tactical fights.
-func (s *searcher) hasThreatAtLeast(threshold int) bool {
+// openThreatAt reports whether placing side's stone on p would create a
+// forcing shape: a four or five (pointScore prices fours exactly) or a live
+// three (exact shape test via threeShapeAt). The summed pointScore cannot
+// decide the three: dirShape prices jump shapes at half value, so two
+// unrelated discounted shapes in different directions summed past
+// scoreLiveThree and misflagged quiet positions as tactical.
+func (s *searcher) openThreatAt(p, side int) bool {
+	if s.pointScore(p, side) >= scoreRushFour {
+		return true // four/five makers are priced exactly
+	}
+	for d := 0; d < 4; d++ {
+		if s.threeShapeAt(p, side, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasOpenThreat reports whether either side owns a forcing shape anywhere on
+// the board — the opening book's "quiet openings only" guard: quiet
+// positions adopt the book's move outright, tactical ones only let the book
+// bias root ordering. Replaces the summed-pointScore hasThreatAtLeast, whose
+// jump-shape discounts let artifact sums (and every contact opening from the
+// second move on) block direct adoption.
+func (s *searcher) hasOpenThreat() bool {
 	n := s.n
 	for p := 0; p < n*n; p++ {
-		if s.b[p] != 0 {
+		if s.b[p] != 0 || s.nearCnt[p] == 0 {
 			continue
 		}
-		x, y := p%n, p/n
-		near := false
-		for dy := -2; dy <= 2 && !near; dy++ {
-			for dx := -2; dx <= 2; dx++ {
-				nx, ny := x+dx, y+dy
-				if nx >= 0 && ny >= 0 && nx < n && ny < n && s.b[ny*n+nx] != 0 {
-					near = true
-					break
-				}
-			}
-		}
-		if !near {
-			continue
-		}
-		if s.pointScore(p, playerMe) >= threshold || s.pointScore(p, playerOpp) >= threshold {
+		if s.openThreatAt(p, playerMe) || s.openThreatAt(p, playerOpp) {
 			return true
 		}
 	}

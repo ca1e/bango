@@ -57,48 +57,51 @@ var dirY = [4]int{0, 1, 1, -1}
 
 // searcher holds the per-think search state over a flat board.
 type searcher struct {
-	n                 int
-	b                 []int  // flat board, row-major: b[y*n+x]
-	lineBuf           []int  // scratch buffer for line extraction
-	hash              uint64 // incremental Zobrist hash of the stones
-	zo                *zobrist
-	tt                *transTable
-	ttEnabled         bool
-	aspirationEnabled bool                          // false forces full-window root searches (test-only)
-	widenFactor       int                           // adaptive aspiration width: grows on score swings
-	lmrEnabled        bool                          // late move reductions on the quiet tail (value-changing)
-	abEnabled         bool                          // false disables alpha-beta pruning (test-only: full-window negamax)
-	pvsEnabled        bool                          // false disables PVS scouting (test-only: plain alpha-beta)
-	killersEnabled    bool                          // false disables killer-move ordering (test-only)
-	qThreeEnabled     bool                          // quiescence also resolves live-three chains (value-changing; arena A/B gated)
-	killers           [maxSearchDepth + 2][2]uint16 // per-ply refutation moves
-	historyEnabled    bool                          // false disables history-heuristic ordering (test-only)
-	history           [2][]int32                    // per-side cutoff statistics, indexed by move
-	lineScore         [2][]int32                    // cached score per line, [me, opp] families
-	lineBuf2          []int                         // scratch buffer for line gathering
-	evalTotal         int                           // running sum of (me - opp) over all lines
-	posEnabled        bool                          // center-pyramid bonus (value-changing; arena A/B gated)
-	posTotal          int                           // running sum of (me - opp) pyramid bonuses
-	stones            int                           // incremental stone count
-	nearCnt           []int8                        // per cell: stones within Chebyshev 2 (candidate filter)
-	near1Cnt          []int8                        // per cell: stones within Chebyshev 1 (quiescence filter)
-	dirVal            []int32                       // cached per-direction shape values: (p*4+d)*2+(side-1)
-	dirDirty          []uint8                       // per cell: stale bits, bit = d*2+(side-1)
-	rule              int                           // INFO rule code (0 = freestyle); see rules.go
-	blackSide         int                           // internal player owning black (renju forbidden side)
-	book              *compiledBook
-	bookHits          int
-	bookAdopted       int
-	deadline          time.Time
-	softDeadline      time.Time // past this, do not start another depth iteration
-	nodeLimit         int64     // INFO max_node: abort the search past this many nodes (0 = unlimited)
-	smpWorkers        int       // lazy SMP worker count (1 = single-threaded, the default)
-	smpRotate         int       // worker index: rotates root move order so SMP trees diverge
-	rootDepth         int
-	lastDepth         int // deepest fully completed iteration
-	nodes             int
-	abCuts            int
-	aborted           bool
+	n                  int
+	b                  []int  // flat board, row-major: b[y*n+x]
+	lineBuf            []int  // scratch buffer for line extraction
+	hash               uint64 // incremental Zobrist hash of the stones
+	zo                 *zobrist
+	tt                 *transTable
+	ttEnabled          bool
+	aspirationEnabled  bool                          // false forces full-window root searches (test-only)
+	widenFactor        int                           // adaptive aspiration width: grows on score swings
+	lmrEnabled         bool                          // late move reductions on the quiet tail (value-changing)
+	abEnabled          bool                          // false disables alpha-beta pruning (test-only: full-window negamax)
+	pvsEnabled         bool                          // false disables PVS scouting (test-only: plain alpha-beta)
+	killersEnabled     bool                          // false disables killer-move ordering (test-only)
+	qThreeEnabled      bool                          // quiescence also resolves live-three chains (value-changing; arena A/B gated)
+	openPriorEnabled   bool                          // root-only classic-opening filter for the first plies (BANGO_OPENPRIOR=0 off)
+	killers            [maxSearchDepth + 2][2]uint16 // per-ply refutation moves
+	historyEnabled     bool                          // false disables history-heuristic ordering (test-only)
+	history            [2][]int32                    // per-side cutoff statistics, indexed by move
+	lineScore          [2][]int32                    // cached score per line, [me, opp] families
+	lineBuf2           []int                         // scratch buffer for line gathering
+	evalTotal          int                           // running sum of (me - opp) over all lines
+	posEnabled         bool                          // center-pyramid bonus (value-changing; arena A/B gated)
+	posTotal           int                           // running sum of (me - opp) pyramid bonuses
+	stones             int                           // incremental stone count
+	nearCnt            []int8                        // per cell: stones within Chebyshev 2 (candidate filter)
+	near1Cnt           []int8                        // per cell: stones within Chebyshev 1 (quiescence filter)
+	dirVal             []int32                       // cached per-direction shape values: (p*4+d)*2+(side-1)
+	dirDirty           []uint8                       // per cell: stale bits, bit = d*2+(side-1)
+	rule               int                           // INFO rule code (0 = freestyle); see rules.go
+	blackSide          int                           // internal player owning black (renju forbidden side)
+	book               *compiledBook
+	modeBook           *compiledBook // classic 26-mode guidance book: theory-zone source only
+	bookViaTranslation bool          // last bookCandidates hit came from the displacement fallback
+	bookHits           int
+	bookAdopted        int
+	deadline           time.Time
+	softDeadline       time.Time // past this, do not start another depth iteration
+	nodeLimit          int64     // INFO max_node: abort the search past this many nodes (0 = unlimited)
+	smpWorkers         int       // lazy SMP worker count (1 = single-threaded, the default)
+	smpRotate          int       // worker index: rotates root move order so SMP trees diverge
+	rootDepth          int
+	lastDepth          int // deepest fully completed iteration
+	nodes              int
+	abCuts             int
+	aborted            bool
 }
 
 // newSearcher prepares the per-think search state: Zobrist codes for the
@@ -126,9 +129,10 @@ func newSearcherWithTT(n int, b []int, maxMemory int64, tt *transTable) *searche
 		// Arena-gated defaults (50 games, 400ms/move each):
 		//  - qThree ON won 28:22 (seed 11) → default on; BANGO_QTHREE=0 off
 		//  - posBonus OFF won 30:20 vs on (seed 7) → default off; BANGO_POS=1 on
-		qThreeEnabled: os.Getenv("BANGO_QTHREE") != "0",
-		posEnabled:    os.Getenv("BANGO_POS") == "1",
-		blackSide:     playerMe, // books and forbidden checks key off this
+		qThreeEnabled:    os.Getenv("BANGO_QTHREE") != "0",
+		posEnabled:       os.Getenv("BANGO_POS") == "1",
+		openPriorEnabled: os.Getenv("BANGO_OPENPRIOR") != "0",
+		blackSide:        playerMe, // books and forbidden checks key off this
 	}
 	s.history = [2][]int32{make([]int32, n*n), make([]int32, n*n)}
 	s.lineBuf2 = make([]int, n)
@@ -306,15 +310,21 @@ func (e *Engine) aiMove() (int, int) {
 	e.mu.Unlock()
 
 	s := newSearcherWithTT(n, b, e.info.MaxMemory, tt)
-	if rule != 0 {
-		black := playerMe
-		if !ownBlack {
-			black = playerOpp
-		}
-		s.setRule(rule, black)
+	// the role→black mapping is required even under freestyle: the opening
+	// book's keys are colour-encoded relative to black (bookCandidates), so
+	// a white engine must map playerOpp→black or every query key describes
+	// the colour-swapped position. Outside renju the forbidden-move logic
+	// ignores blackSide entirely, so this only feeds the book query.
+	black := playerMe
+	if !ownBlack {
+		black = playerOpp
 	}
+	s.setRule(rule, black)
 	if book := e.loadBook(); book != nil && book.rule == rule {
 		s.book = book
+	}
+	if modeBook := e.modeBook; modeBook != nil && modeBook.rule == rule && modeBook.size == n {
+		s.modeBook = modeBook
 	}
 	maxDepth := maxSearchDepth
 	if e.info.MaxDepth > 0 && e.info.MaxDepth < maxDepth {
@@ -393,8 +403,8 @@ func (s *searcher) runSMP(maxDepth int, budget time.Duration) (int, int) {
 			ws.smpWorkers = 1 // the worker itself runs single-threaded
 			ws.smpRotate = w  // distinct root rotation → distinct tree
 			ws.rule, ws.blackSide = s.rule, s.blackSide
-			ws.qThreeEnabled, ws.posEnabled = s.qThreeEnabled, s.posEnabled
-			ws.book = s.book
+			ws.qThreeEnabled, ws.posEnabled, ws.openPriorEnabled = s.qThreeEnabled, s.posEnabled, s.openPriorEnabled
+			ws.book, ws.modeBook = s.book, s.modeBook
 			x, y := ws.runSingle(maxDepth, budget)
 			resCh[w] <- result{x, y, ws.lastDepth}
 			ready <- struct{}{}
@@ -427,6 +437,15 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 		return -1, -1
 	}
 
+	// classic-opening prior (root only, first plies): quiet candidates must
+	// develop in contact with a stone or at a knight offset — remote split
+	// development (diagonal twos, gapped line twos away from the action) is
+	// not a classic opening reply. Forcing shapes (fours/fives/live threes
+	// for either role) are never filtered.
+	if s.openPriorEnabled && s.stones <= openPriorMaxStones {
+		moves = s.applyOpeningPrior(moves)
+	}
+
 	// Tactical short-circuits:
 	//  1. complete our own five;
 	//  2. otherwise block the opponent's five (forced).
@@ -447,7 +466,9 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 	// positions only let the book bias root move ordering.
 	if cands := s.bookCandidates(); len(cands) > 0 {
 		s.bookHits++
-		if !s.hasThreatAtLeast(scoreLiveThree) {
+		// displacement-fallback candidates only bias ordering: the search
+		// picks the actual first reply among the prior's classic cells
+		if !s.hasOpenThreat() && !s.bookViaTranslation {
 			s.bookAdopted++
 			return cands[0].move % n, cands[0].move / n
 		}
@@ -780,6 +801,67 @@ func (s *searcher) negamax(depth, side, alpha, beta int) int {
 // reference engine uses the same limit).
 const quiescenceDepth = 4
 
+// openPriorMaxStones bounds the classic-opening prior to the first two moves
+// of each side (the root decision happens with stones already on the board).
+const openPriorMaxStones = 4
+
+// classicOpeningPoint reports whether p is a classic developing square:
+// adjacent to some stone (contact, including diagonal) or a knight offset
+// from one (Manhattan 3). Diagonal-two and gapped line-two placements are
+// rejected — remote split development is not a classic opening reply.
+func (s *searcher) classicOpeningPoint(p int) bool {
+	n := s.n
+	x, y := p%n, p/n
+	for q := 0; q < n*n; q++ {
+		if s.b[q] == 0 {
+			continue
+		}
+		qx, qy := q%n, q/n
+		dx, dy := x-qx, y-qy
+		if dx < 0 {
+			dx = -dx
+		}
+		if dy < 0 {
+			dy = -dy
+		}
+		if dx <= 1 && dy <= 1 {
+			return true // contact
+		}
+		if (dx == 1 && dy == 2) || (dx == 2 && dy == 1) {
+			return true // knight
+		}
+	}
+	return false
+}
+
+// applyOpeningPrior filters and reorders quiet root candidates for the
+// opening plies. From three stones on, a recognized classic opening mode
+// contributes its theory cells (the classic book's replies for the canonical
+// prefix, projected into the board frame): they always stay in the list and
+// rank first. Remaining quiet candidates must be contact/knight development;
+// forcing shapes pass untouched. An all-filtered list falls back to the
+// original candidates.
+func (s *searcher) applyOpeningPrior(moves []int) []int {
+	var zone map[int]bool
+	if s.stones >= 3 {
+		zone = s.modeTheoryZone()
+	}
+	theory := make([]int, 0, 4)
+	kept := make([]int, 0, len(moves))
+	for _, m := range moves {
+		switch {
+		case zone[m]:
+			theory = append(theory, m)
+		case s.openThreatAt(m, playerMe) || s.openThreatAt(m, playerOpp) || s.classicOpeningPoint(m):
+			kept = append(kept, m)
+		}
+	}
+	if len(theory)+len(kept) == 0 {
+		return moves
+	}
+	return append(theory, kept...)
+}
+
 // aspirationMargin is the half-width of the root aspiration window: one live
 // three (30,000) on each side of the previous iteration's score. Fail-soft
 // bounds outside the window widen geometrically before falling back to the
@@ -966,51 +1048,55 @@ func (s *searcher) extendsOn(p, side int) bool {
 		return true
 	}
 	if s.qThreeEnabled {
-		// live-three gate: the last move made a live three in some direction,
-		// counted on the actual stones through p — pointScore values the
-		// hypothetical placement and is meaningless on an occupied cell.
-		// Growth points of a live three are live-four makers, which the
-		// rush-four floor of fourThreats already lists, so opening the gate
-		// alone extends the resolved chains from fours to threes. Jump
-		// threes (o.oo) are covered by the span window below.
-		n := s.n
-		x, y := p%n, p/n
+		// live-three gate: the last move made a live three in some direction
+		// (contiguous or jump — the exact shapes in threeShapeAt). Growth
+		// points of a live three are live-four makers, which the rush-four
+		// floor of fourThreats already lists, so opening the gate alone
+		// extends the resolved chains from fours to threes.
 		for d := 0; d < 4; d++ {
-			dx, dy := dirX[d], dirY[d]
-			a := s.countLine(x, y, -dx, -dy, side)
-			b := s.countLine(x, y, dx, dy, side)
-			c := 1 + a + b
-			if c == 3 && s.isEmptyAt(x-(a+1)*dx, y-(a+1)*dy) && s.isEmptyAt(x+(b+1)*dx, y+(b+1)*dy) {
-				return true // contiguous live three
-			}
-			// jump three: p's run plus a one-gap continuation inside a
-			// 5-cell span — 2 more stones within ±4 steps of p on this line,
-			// with p itself making 3 of a five-window
-			stones, lo, hi := 1, 0, 0
-			for k := -4; k <= 4; k++ {
-				if k == 0 {
-					continue
-				}
-				nx, ny := x+k*dx, y+k*dy
-				if nx < 0 || ny < 0 || nx >= n || ny >= n || s.b[ny*n+nx] != side {
-					continue
-				}
-				stones++
-				if lo == 0 || k < lo {
-					lo = k
-				}
-				if k > hi {
-					hi = k
-				}
-			}
-			if stones >= 3 && hi-lo <= 4 {
-				// three stones (incl. p) inside a 5-window: a jump-three
-				// shape whose fill point is a four maker
+			if s.threeShapeAt(p, side, d) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// threeShapeAt reports whether side's stone on p forms a live three along
+// direction d: a contiguous run of three with both outer ends empty, or a
+// jump shape — three of side's stones (p included) inside a 5-cell window
+// whose fill point makes a four. Shared by the quiescence gate (extendsOn)
+// and the book's quiet-position guard (openThreatAt).
+func (s *searcher) threeShapeAt(p, side, d int) bool {
+	n := s.n
+	x, y := p%n, p/n
+	dx, dy := dirX[d], dirY[d]
+	a := s.countLine(x, y, -dx, -dy, side)
+	b := s.countLine(x, y, dx, dy, side)
+	if 1+a+b == 3 && s.isEmptyAt(x-(a+1)*dx, y-(a+1)*dy) && s.isEmptyAt(x+(b+1)*dx, y+(b+1)*dy) {
+		return true // contiguous live three
+	}
+	// jump three: p's run plus a one-gap continuation inside a 5-cell span —
+	// 2 more stones within ±4 steps of p on this line, with p itself making
+	// 3 of a five-window
+	stones, lo, hi := 1, 0, 0
+	for k := -4; k <= 4; k++ {
+		if k == 0 {
+			continue
+		}
+		nx, ny := x+k*dx, y+k*dy
+		if nx < 0 || ny < 0 || nx >= n || ny >= n || s.b[ny*n+nx] != side {
+			continue
+		}
+		stones++
+		if lo == 0 || k < lo {
+			lo = k
+		}
+		if k > hi {
+			hi = k
+		}
+	}
+	return stones >= 3 && hi-lo <= 4
 }
 
 // threatMadeAt reports whether side's stone at p completed a four (or five)

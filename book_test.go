@@ -220,8 +220,20 @@ func TestLoadBookFileAndPath(t *testing.T) {
 		t.Fatalf("rule/size = %d/%d", cb.rule, cb.size)
 	}
 
-	if got := findBookPath(""); got != "" {
-		t.Fatalf("findBookPath without folder or exe-side file = %q", got)
+	// with the repository's openbook/ default present the cwd fallback finds
+	// it, so the empty result only holds from a directory without one
+	if wd, err := os.Getwd(); err == nil {
+		defer os.Chdir(wd)
+		empty := t.TempDir()
+		if err := os.Chdir(empty); err != nil {
+			t.Fatal(err)
+		}
+		if got := findBookPath(""); got != "" {
+			t.Fatalf("findBookPath without any candidate file = %q", got)
+		}
+		if err := os.Chdir(wd); err != nil {
+			t.Fatal(err)
+		}
 	}
 	sub := filepath.Join(dir, "pbrain-bango")
 	if err := os.MkdirAll(sub, 0o755); err != nil {

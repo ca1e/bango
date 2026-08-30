@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,7 +68,7 @@ func TestEngineBookThreatGuard(t *testing.T) {
 		{4, 5, playerMe}, {1, 1, playerOpp}} {
 		s.setStone(st.y*9+st.x, st.side)
 	}
-	if !s.hasThreatAtLeast(scoreLiveThree) {
+	if !s.hasOpenThreat() {
 		t.Fatal("test setup: the position should carry a live three")
 	}
 	p, q := s.run(4, time.Second)
@@ -178,5 +179,156 @@ func TestEngineBookProtocol(t *testing.T) {
 	x, y := expectMove(t, s, 5*time.Second, 9)
 	if x != 4 || y != 5 {
 		t.Fatalf("BOARD reply = (%d,%d), want book move (4,5)", x, y)
+	}
+}
+
+// TestBookWhiteFreestyleAdoption: regression for the freestyle colour-mapping
+// bug. The engine plays WHITE (blackSide defaults to playerMe — exactly what
+// aiMove builds under INFO rule 0), and the covered position must still be
+// encoded correctly and adopted outright.
+func TestBookWhiteFreestyleAdoption(t *testing.T) {
+	body := `{"id":"t","name":"test book","rules":"freestyle","size":9,
+		"coordinateSystem":"board-row-column",
+		"openings":[{"id":"a","coordinates":[[4,4],[4,5],[3,4],[5,4]]}]}`
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "book.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb, err := loadBookFile(filepath.Join(dir, "book.json"))
+	if err != nil {
+		t.Fatalf("load book: %v", err)
+	}
+	// engine white: the human's black stone at (4,4) is playerOpp
+	b := make([]int, 81)
+	b[4*9+4] = playerOpp
+	s := newSearcher(9, b, 0)
+	s.setRule(RuleFreestyle, playerOpp) // the aiMove mapping for a white engine
+	s.book = cb
+	if s.blackSide != playerOpp {
+		t.Fatalf("blackSide = %d, want playerOpp (white engine)", s.blackSide)
+	}
+	x, y := s.run(4, 0)
+	// (4,4) is the 9×9 centre: the position has the full symmetry group, so
+	// the book's reply is stored under all eight transforms — every direct
+	// neighbour is a valid symmetric twin of (4,5)
+	if !((x == 4 && (y == 3 || y == 5)) || (y == 4 && (x == 3 || x == 5))) {
+		t.Fatalf("white reply = (%d,%d), want a symmetric twin of the book move (4,5)", x, y)
+	}
+	if s.bookAdopted != 1 {
+		t.Fatalf("bookAdopted = %d, want 1", s.bookAdopted)
+	}
+}
+
+// TestHasOpenThreatShapes: the book gate classifies forcing shapes exactly.
+// The summed-pointScore gate misflagged two unrelated discounted jump shapes
+// in different directions as a live three; the exact gate must stay quiet
+// there while still catching real threes (contiguous, jump, x.x.x) and fours.
+func TestHasOpenThreatShapes(t *testing.T) {
+	build := func(stones ...[3]int) *searcher {
+		b := make([]int, 81)
+		for _, st := range stones {
+			b[st[1]*9+st[0]] = st[2]
+		}
+		return newSearcher(9, b, 0)
+	}
+	cases := []struct {
+		name   string
+		pos    [][3]int
+		threat bool
+	}{
+		// quiet: stones pairwise off-line — every empty cell holds at most one
+		// discounted jump shape per direction, no contiguous pair anywhere
+		{"quiet spread", [][3]int{{4, 4, playerMe}, {0, 3, playerMe}, {0, 4, playerOpp}}, false},
+		// the old gate's artifact: cell (3,3) sums two 15000 jump shapes
+		// (row to (5,3), column to (3,6)) to 30100 >= scoreLiveThree, but no
+		// single direction carries a three and no cell sees both stones
+		{"two-direction jump twos", [][3]int{{5, 3, playerMe}, {3, 6, playerMe}, {0, 0, playerOpp}}, false},
+		// real threats
+		{"contiguous pair (three maker)", [][3]int{{4, 4, playerMe}, {3, 4, playerMe}, {0, 0, playerOpp}}, true},
+		{"jump pair fill (x.x)", [][3]int{{4, 4, playerMe}, {6, 4, playerMe}, {0, 0, playerOpp}}, true},
+		{"double jump x.x.x", [][3]int{{4, 4, playerMe}, {6, 4, playerMe}, {8, 4, playerMe}, {0, 0, playerOpp}}, true},
+		{"four point", [][3]int{{4, 4, playerMe}, {5, 4, playerMe}, {6, 4, playerMe}, {7, 4, playerOpp}, {0, 0, playerOpp}}, true},
+	}
+	for _, c := range cases {
+		s := build(c.pos...)
+		if got := s.hasOpenThreat(); got != c.threat {
+			t.Errorf("%s: hasOpenThreat = %v, want %v", c.name, got, c.threat)
+		}
+	}
+}
+
+// TestFindDefaultBookPaths: the shipped openbook defaults are found relative
+// to the working directory (covers `go run .`, whose executable lives in a
+// temp dir); findBookPath itself no longer looks at openbook.
+func TestFindDefaultBookPaths(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "openbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "openbook", defaultBookFile), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := findBookPath(""); got != "" {
+		t.Fatalf("findBookPath = %q, want empty (openbook is the defaults' job)", got)
+	}
+	paths := findDefaultBookPaths([]string{defaultBookFile})
+	if len(paths) != 1 || !strings.HasSuffix(paths[0], filepath.Join("openbook", defaultBookFile)) {
+		t.Fatalf("findDefaultBookPaths = %v, want the one existing openbook file", paths)
+	}
+}
+
+// TestDefaultBookShippedAndLoads: the repository's openbook default exists,
+// compiles, and matches the engine's default rule (freestyle 15×15).
+func TestDefaultBookShippedAndLoads(t *testing.T) {
+	e := NewEngine()
+	if cb := e.loadBook(); cb == nil {
+		t.Fatal("default openbook did not load from the package directory")
+	} else {
+		if cb.rule != RuleFreestyle || cb.size != 15 {
+			t.Fatalf("default book rule/size = %d/%d, want freestyle/15", cb.rule, cb.size)
+		}
+		if len(cb.positions) == 0 {
+			t.Fatal("default book compiled to zero positions")
+		}
+	}
+}
+
+// TestTranslatedFallbackClassicOnly: regression for the random-first-stone
+// opening quality finding — the displacement fallback must not adopt remote
+// replies. Every candidate for a non-tengen black opening (and the engine's
+// actual reply) is a contact/knight development, matching the opening prior.
+func TestTranslatedFallbackClassicOnly(t *testing.T) {
+	e := NewEngine()
+	if e.loadBook() == nil {
+		t.Fatal("default adoption book did not load")
+	}
+	for _, black1 := range [][2]int{{6, 6}, {8, 7}, {5, 8}} {
+		b := make([]int, 225)
+		b[black1[1]*15+black1[0]] = playerOpp // engine is white
+		s := newSearcher(15, b, 0)
+		s.setRule(RuleFreestyle, playerOpp)
+		s.book = e.book
+		cands := s.bookCandidates()
+		if len(cands) == 0 {
+			t.Fatalf("black1 %v: displacement fallback produced no candidates", black1)
+		}
+		for _, c := range cands {
+			if !s.classicOpeningPoint(c.move) {
+				t.Fatalf("black1 %v: remote candidate (%d,%d) survived the classic filter",
+					black1, c.move%15, c.move/15)
+			}
+		}
+		x, y := s.run(8, 0)
+		if !s.classicOpeningPoint(y*15+x) {
+			t.Fatalf("black1 %v: reply (%d,%d) is not a contact/knight development", black1, x, y)
+		}
 	}
 }

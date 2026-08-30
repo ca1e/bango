@@ -21,6 +21,7 @@ gomoku/
 │                      # 杀手走法/历史启发、迭代加深、规则与禁手
 ├── book.go            # 开局库：数据源解析、8 对称规范化编译、查询
 ├── rules.go           # 规则判定：各规则胜负分派与连珠禁手检测
+├── opening.go         # 经典 26 式开局：模式枚举、识别、理论区投影
 ├── tt.go              # 置换表：Zobrist 哈希与缓存读写
 ├── vcx.go             # 算杀：VCF/VCT 连续威胁搜索
 ├── protocol.go        # 协议数据结构：Command 定义与坐标解析
@@ -38,6 +39,7 @@ gomoku/
 ├── arena_test.go      # arena 冒烟测试（-short 跳过）
 ├── search_bench_test.go # 固定图面 + 固定深度的确定性搜索基准（go test -bench）
 ├── gui/               # 浏览器对弈前端（ES module）+ TCP 桥接服务；test/ 下三个 node 测试套件
+├── openbook/          # 开局库源数据（默认启用 gomocup-2026-15x15.json + classic-26-15x15.json）
 ├── protol.md          # Gomocup/Piskvork 协议中文说明文档
 ├── go.mod             # Go 模块定义
 └── .gitignore         # 忽略 pbrain-* 编译产物
@@ -210,11 +212,14 @@ gomoku/
 [`book.go`](book.go) 移植教程原生项目（gobang）的开局库模块，数据格式互通：
 
 - **数据源**：JSON（`id/rules/size/coordinateSystem/openings[].coordinates`），支持 `board-row-column` 与 `center-relative-x-y`（Gomocup 官方开局页格式）两种坐标系；`rules` 支持 `freestyle`/`renju`，规则或棋盘尺寸不匹配的书整本禁用
+- **经典 26 式开局**（[`opening.go`](opening.go)，2026-08）：黑1 天元 + 白1 直指/斜指 + 黑2 在天元 5×5 盒内的对称类，规范化去重后**恰好 13 直指 + 13 斜指 = 26 式**，与经典计数吻合。`book gen-classic` 枚举种子线，`book build --seeds` 以固定深度搜索生长续着（成五点终止行、绝不入书），产出 `openbook/classic-26-15x15.json`。**定位为模式引导书**（`modeBook`）：其续着来自深度 8 自搜索、弱于实战搜索，arena 实测直接跟走会输棋（11:19），故只作理论区来源、绝不直接采纳；直接采纳仍只用赛事级 gomocup 书
+- **模式识别与理论区**（P2/P3）：`openingModeOf` 按同一规范化机器识别前三子的模式（黑1 须天元、白1 须贴身直/斜、黑2 须在盒内，4 子时忽略偏离的白2；非天元/远距应答 → 非经典模式，干净降级）；`modeTheoryZone` 把模式引导书在该模式规范前缀下的应答投影回棋盘框架——作为**软先验**：3-4 子时理论格始终保留并排根列表最前，其余安静候选仍须贴身/马步；搜索仍自行裁决
 - **编译**：每条开局序列按前缀展开成「局面 → 下一手候选」映射，局面经 **8 对称规范化**（4 旋转 × 2 镜像，字典序最小 key，并记录自同构群）；同局面多来源/多对称命中时权重累加
-- **查询键**为石子集合（颜色相对黑方编码）——引擎无需着法历史，`BOARD` 恢复的局面同样可命中；**首着泛化**：单子局面未直接命中时，把书里所有「第 1→2 手」位移平移到实际首子位置
-- **使用决策**（[`run()`](algorithm.go)，与原生实现一致）：当前局面**无 ≥活三威胁**时直接采纳权重最高的书着法；战斗局面只把书权重注入根节点排序（`applyBookOrdering`），搜索仍自行裁决
+- **查询键**为石子集合（颜色相对黑方编码）——引擎无需着法历史，`BOARD` 恢复的局面同样可命中；**首着泛化**：单子局面未直接命中时，把书里所有「第 1→2 手」位移平移到实际首子位置，按贴身/马步准则过滤（与开局先验同判据——远距位移对随机首子是几何上的任意点，自对弈实测 42 局随机开局中 38 局产生远距首应答，过滤后归零），且**只偏置排序、不直接采纳**（arena 实测翻译候选直接采纳对基线 26:34 落败，降级为排序后 29:31 平手；精确命中的书着不受影响照常采纳）（`TestTranslatedFallbackClassicOnly` 回归）
+- **使用决策**（[`run()`](algorithm.go)，与原生实现一致）：当前局面**无强制性威胁**（`hasOpenThreat`：任一方有成四/成五点，或按精确棋型——连三两端空 / ±4 窗口 3 子跳三——存在活三制造点）时直接采纳权重最高的书着法；战斗局面只把书权重注入根节点排序（`applyBookOrdering`），搜索仍自行裁决。**2026-08 门槛重写**：旧 `hasThreatAtLeast(活三)` 用四方向 `pointScore` 求和，而 `dirShape` 对跳形打半价（15000），两个互不相干的跳形在不同方向求和 30100 即冒充活三——加上贴身接触局面从第二手起必然存在真实 30000 点，"直接采纳"路径实际从未生效；新判定逐方向精确分类（`TestHasOpenThreatShapes` 回归）。**颜色映射修复**：书键按"相对黑方"编码颜色，`aiMove` 原本只在 `rule != 0` 时调用 `setRule`，freestyle（默认规则）下执白时 `blackSide` 停留在默认 `playerMe`，查询键颜色全部颠倒、第二手起永远匹配失败（只有不校验颜色的单子平移兜底幸存）——现无条件设置映射（`TestBookWhiteFreestyleAdoption` 回归）
 - **护栏**：书着法先过 `isForbidden`（连珠）/占位过滤；书文件缺失或损坏静默降级为纯搜索
-- **加载**：`INFO folder` 指定的持久目录下 `pbrain-bango/book.json` 优先，其次引擎可执行文件同目录
+- **加载**：`INFO folder` 指定的持久目录下 `pbrain-bango/book.json` 优先，其次引擎可执行文件同目录 `book.json`（协议提供即独占）；否则装载工作目录/可执行目录 `openbook/` 下的默认书——`gomocup-2026-15x15.json`（直接采纳书）与 `classic-26-15x15.json`（模式引导书），工作目录兜底覆盖 `go run .` 的临时可执行文件场景；规则或尺寸不匹配时静默禁用
+- **无库开局先验**（2026-08，默认开，`BANGO_OPENPRIOR=0` 关）：书未命中/未采纳时，前 4 子内根节点的**安静候选**（落子后不成活三及以上，精确棋型判定）必须与任意棋子贴身（切比雪夫 ≤1）或成马步（曼哈顿 3）——远距斜二、带缺口的分裂跳二等非经典发展被过滤；强制着法（成三/四/五点）与书采纳路径完全不受影响，过滤后为空则回退原列表
 
 维护子命令：
 
@@ -261,7 +266,7 @@ PVS 是**值等价**变换——固定深度下根分值与着法与普通 Alpha
 - [`search_bench_test.go`](search_bench_test.go)：中局/战术两个固定图面的确定性搜索基准（`go test -run '^$' -bench BenchmarkSearch -benchtime 1x -v`），输出节点数与截断数供优化对比；
 - [`vcx_test.go`](vcx_test.go)：双三/活三必胜杀棋必须找到、安静局面不得误报、对方冲四可破解杀棋、可挡冲四不得误报必杀、经过强制挡四的真杀链必须找到；
 - [`rules_test.go`](rules_test.go)：三三/四四/长连禁手、**四三合法**、跳四交叉 4-4、白棋无禁手、五子优先覆盖禁手、着法生成过滤（黑滤/白留）、各规则（0/1/4/8/9）胜负语义（含 caro 边缘端点、standard 长连不胜）、连珠自对弈完局；禁手枚举后增量评估/哈希不被扰动；
-- [`book_test.go`](book_test.go) / [`book_engine_test.go`](book_engine_test.go) / [`bookcmd_test.go`](bookcmd_test.go)：开局库编译与对称查询、权重累积、首着平移、规则/尺寸护栏、禁手候选过滤、协议端到端命中、validate/build 闭环；
+- [`book_test.go`](book_test.go) / [`book_engine_test.go`](book_engine_test.go) / [`bookcmd_test.go`](bookcmd_test.go)：开局库编译与对称查询、权重累积、首着平移、规则/尺寸护栏、禁手候选过滤、协议端到端命中、validate/build 闭环；**执白 freestyle 颜色映射采纳**、精确威胁门槛六例（安静/双方向跳二伪威胁/连三/跳三/x.x.x/成四点）、openbook 默认书路径与装载；
 - [`ai_selfplay_test.go`](ai_selfplay_test.go)：完整自对弈回归（合法性、能分出胜负）与搜索深度/节点数统计（`go test -v -run TestSearchStats` 查看）；
 - [`protocol_test.go`](protocol_test.go)：黑盒协议一致性（管道/TCP）、START 尺寸边界（5 OK / 4 与非法输入 ERROR）、TURN/TAKEBACK 错误路径与越界坐标宽容语义、BOARD 回着、field-3 标记格、可选命令、连珠避禁手、未知命令保活；
 - [`engine_test.go`](engine_test.go)：START 前棋盘已分配（回归）、渲染内容、满盘 `run` 返回 (−1,−1) 与 `aiMove` 盘内兜底；
@@ -348,6 +353,9 @@ name="pbrain-bango", version="0.1", author="cale && GLM5.3", ai="minimax+alphabe
 
 搜索优化（PVS、门控 quiescence + 活三扩展、杀手/历史、置换表、评估缓存）、VCF/VCT 算杀、连珠禁手与开局库均已落地（见第五节）。**2026-08 第二轮优化**已完成以下各项（各自带验收，详见对应小节）：
 
+- **首着泛化贴身过滤 + 降级排序**（5.11，2026-08 第四轮）：平移兜底候选按贴身/马步准则过滤（远距首应答 38/42 → 0）并降级为仅排序——arena 实测直接采纳 26:34 回归，排序化后 29:31 与基线平手
+- **经典 26 式开局：枚举书 + 模式识别 + 理论区先验**（5.11，2026-08 第四轮）：对称枚举独立复现 26 式计数（13 直 + 13 斜），`book build --seeds` 自搜索生长经典书并入默认装载；模式分类器与理论区投影给偏离局面软引导；顺手修复 `book validate` 多行间不悔棋的潜伏缺陷
+- **开局库三层修复 + 无库开局先验**（5.11 / 5.2，2026-08 第三轮）：freestyle 执白颜色映射修复、`hasOpenThreat` 精确门槛重写、默认装载 `openbook/gomocup-2026-15x15.json`（Gomocup 2026 官方开局）；前 4 子安静候选贴身/马步先验（`BANGO_OPENPRIOR` 可关），协议端到端验证白棋对天元/跳形开局全部按书应答
 - **威胁梯子双保留 + 对方杀棋探测**（5.2 / 5.9，2026-08 第三轮）：修复「活三不防」正确性缺陷——对方行棋节点上单边提前返回隐藏对方反击点、搜索构造幻影必胜并放弃防守；照参考实现 eval.js 把成五/活四级改为双方合并、行棋方在前，并新增对方杀棋探测（验证封锁才采纳）与已证胜局护栏。arena 对旧引擎 50 局 **50:0**（seed 7/13 各 30/20 局、300ms/手），回归测试 6 例
 - **VCT 防守层补挡活三**（5.9）：修复「活二级假杀」正确性缺陷，arena 26:24 优胜
 - **TT 跨手保留**：表由 `Engine` 持有、`START/RESTART` 同尺寸沿用、换尺寸/换预算重建；`newSearcherWithTT` 借用注入，跨手命中复用实测 12 节点 vs 1864 节点（1%），arena 28:22 优胜
