@@ -56,13 +56,16 @@ export class Game {
   }
 
   judge(x, y, player) {
-    let maxRun = 0, maxCells = null;
+    let maxRun = 0, maxCells = null, fiveCells = null;
     for (const [dx, dy] of DIRS) {
       const r = this.runFrom(x, y, dx, dy, player);
       if (r.len > maxRun) { maxRun = r.len; maxCells = r.cells; }
+      if (r.len === 5 && !fiveCells) fiveCells = r.cells;
     }
     if (player === BLACK && this.renju) {
-      if (maxRun === 5) return this.finish(BLACK, '五连达成', maxCells);
+      // RIF：任一方向成恰五即胜，且优先于另一方向同时形成的长连
+      //（五覆盖一切禁手，与引擎 rules.go 的 winsMove/isForbidden 一致）。
+      if (fiveCells) return this.finish(BLACK, '五连达成', fiveCells);
       if (maxRun >= 6) return this.finish(WHITE, '黑方长连犯规（六连及以上）', maxCells);
       const foul = this.forbiddenAt(x, y);
       if (foul) return this.finish(WHITE, `黑方${FOUL_NAME[foul]}`, null);
@@ -124,13 +127,16 @@ export class Game {
   }
 
   _forbidden(x, y, depth) {
-    let maxRun = 0;
+    // 五覆盖禁手按方向判定：同一手在 A 方向恰五、B 方向长连并存时，
+    // 恰五优先（不禁手），不能用四方向的最大连长一票否决。
+    let hasFive = false, overline = false;
     for (const [dx, dy] of DIRS) {
       const r = this.runFrom(x, y, dx, dy, BLACK);
-      if (r.len > maxRun) maxRun = r.len;
+      if (r.len === 5) hasFive = true;
+      if (r.len >= 6) overline = true;
     }
-    if (maxRun === 5) return null;        // 成五：五优先于禁手
-    if (maxRun >= 6) return 'overline';   // 长连
+    if (hasFive) return null;             // 成五：五优先于禁手
+    if (overline) return 'overline';      // 长连
     if (depth >= MAX_DEPTH) return null;  // 递归封顶：按不禁处理
     let fours = 0, threes = 0;
     for (const [dx, dy] of DIRS) {

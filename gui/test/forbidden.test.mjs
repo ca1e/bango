@@ -94,6 +94,20 @@ test('无禁手规则下没有禁手点', () => {
 });
 
 let failed = 0;
+test('同手恰五+长连并存：五优先判黑胜（非禁手）', () => {
+  // 行向落 (7,9) 成恰五，同时列向成七连：RIF 五覆盖一切禁手形状，
+  // 与引擎 rules.go 的 winsMove（逐方向 c==5 即胜）口径一致。
+  const g = mk(15, true, [
+    [3, 9, BLACK], [4, 9, BLACK], [5, 9, BLACK], [6, 9, BLACK],
+    [7, 3, BLACK], [7, 4, BLACK], [7, 5, BLACK], [7, 6, BLACK],
+    [7, 7, BLACK], [7, 8, BLACK],
+  ]);
+  assert.equal(g.forbiddenAt(7, 9), null);
+  const res = g.place(7, 9, true);
+  assert.equal(res.over, true);
+  assert.equal(res.winner, BLACK);
+});
+
 for (const [name, fn] of tests) {
   try {
     fn();
