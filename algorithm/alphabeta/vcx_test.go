@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 import (
 	"testing"
@@ -215,20 +215,6 @@ func TestKillSearchFreshThreeDefended(t *testing.T) {
 `)
 	if r := s.runKillSearch(2 * time.Second); r >= 0 {
 		t.Fatalf("blockable fresh threes reported as a kill at (%d,%d)", r%9, r/9)
-	}
-}
-
-// TestEngineUsesKillSearch: the engine-level run must still behave when the
-// kill search is wired in (regression: run returns a legal move).
-func TestEngineUsesKillSearch(t *testing.T) {
-	e := NewEngine()
-	e.resetBoard(9)
-	e.info.TimeoutTurn = 300
-	e.place(4, 4, 2)
-	e.place(5, 5, 1)
-	x, y := e.aiMove()
-	if x < 0 || x >= 9 || y < 0 || y >= 9 || e.board[y][x] != 0 {
-		t.Errorf("aiMove returned illegal cell (%d,%d)", x, y)
 	}
 }
 

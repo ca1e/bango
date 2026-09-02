@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 // Opening book maintenance subcommands:
 //
@@ -21,12 +21,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"gomoku/book"
 	"os"
 	"time"
 )
 
-// runBookCommand dispatches `pbrain-bango book ...`.
-func runBookCommand(args []string) {
+// RunBookCommand dispatches `pbrain-bango book ...`.
+func RunBookCommand(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: pbrain-bango book validate <file> | book build [flags]")
 		os.Exit(2)
@@ -52,16 +53,16 @@ func runBookCommand(args []string) {
 }
 
 // loadBookSources parses a book file into raw sources (object or array form).
-func loadBookSources(path string) ([]bookSourceJSON, error) {
+func loadBookSources(path string) ([]book.Source, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var single bookSourceJSON
+	var single book.Source
 	if err := json.Unmarshal(data, &single); err == nil && single.Size > 0 {
-		return []bookSourceJSON{single}, nil
+		return []book.Source{single}, nil
 	}
-	var many []bookSourceJSON
+	var many []book.Source
 	if err := json.Unmarshal(data, &many); err == nil && len(many) > 0 {
 		return many, nil
 	}
@@ -85,11 +86,11 @@ func bookValidate(path string) error {
 
 	for si := range sources {
 		src := &sources[si]
-		rule, ok := bookRuleCode(src.Rules)
+		rule, ok := book.RuleCode(src.Rules)
 		if !ok {
 			return fmt.Errorf("%s: source %q: unsupported rules %q", path, src.ID, src.Rules)
 		}
-		conv, err := bookConverter(src.CoordinateSystem)
+		conv, err := book.Converter(src.CoordinateSystem)
 		if err != nil {
 			return fmt.Errorf("%s: source %q: %v", path, src.ID, err)
 		}
@@ -101,7 +102,7 @@ func bookValidate(path string) error {
 
 		summary.Openings += len(src.Openings)
 		for _, op := range src.Openings {
-			line := make([]bookStone, 0, len(op.Coordinates))
+			line := make([]book.Stone, 0, len(op.Coordinates))
 			occupied := make(map[int]bool)
 			for _, c := range op.Coordinates {
 				if len(c) != 2 {
@@ -128,12 +129,12 @@ func bookValidate(path string) error {
 					return fmt.Errorf("%s: opening %q: five completed at (%d,%d)", path, op.ID, x, y)
 				}
 				s.makeMove(p, side)
-				line = append(line, bookStone{x, y, 1})
+				line = append(line, book.Stone{X: x, Y: y, Role: 1})
 				if len(line)%2 == 0 {
-					line[len(line)-1].role = -1
+					line[len(line)-1].Role = -1
 				}
 			}
-			key, _ := bookPositionKey(line, src.Size)
+			key, _ := book.PositionKey(line, src.Size)
 			if seenPositions[key] {
 				return fmt.Errorf("%s: opening %q: duplicate position", path, op.ID)
 			}
@@ -142,7 +143,7 @@ func bookValidate(path string) error {
 			// clear the board: lines must validate independently, not on the
 			// leftovers of the previous opening
 			for _, st := range line {
-				s.setStone(st.y*src.Size+st.x, 0)
+				s.setStone(st.Y*src.Size+st.X, 0)
 			}
 		}
 	}
@@ -167,7 +168,7 @@ func bookGenClassic(args []string) {
 		os.Exit(2)
 	}
 	seeds := classicOpeningSeeds(*size)
-	src := bookSourceJSON{
+	src := book.Source{
 		ID:               "bango-classic",
 		Name:             fmt.Sprintf("classic opening modes, %d seed lines (size %d)", len(seeds), *size),
 		Source:           "symmetry enumeration (5x5 box around the tengen)",
@@ -176,7 +177,7 @@ func bookGenClassic(args []string) {
 		CoordinateSystem: "board-row-column",
 	}
 	for i, s := range seeds {
-		src.Openings = append(src.Openings, bookOpeningJSON{
+		src.Openings = append(src.Openings, book.Opening{
 			ID: fmt.Sprintf("classic-%03d", i+1),
 			Coordinates: [][]int{
 				{s[0], s[1]}, {s[2], s[3]}, {s[4], s[5]},
@@ -240,7 +241,7 @@ func bookBuild(args []string) {
 		b.walk(nil, nil)
 	}
 
-	src := bookSourceJSON{
+	src := book.Source{
 		ID:               "bango-built",
 		Name:             fmt.Sprintf("pbrain-bango built opening book (rule %d, depth %d)", *rule, *depth),
 		Source:           "self-search",
@@ -275,16 +276,16 @@ func (b *bookBuilder) walkSeeds(path string, size int) error {
 		if src.Size != size {
 			return fmt.Errorf("%s: source %q: size %d, want %d", path, src.ID, src.Size, size)
 		}
-		rule, ok := bookRuleCode(src.Rules)
+		rule, ok := book.RuleCode(src.Rules)
 		if !ok || rule != b.s.rule {
 			return fmt.Errorf("%s: source %q: rules %q does not match the build rule", path, src.ID, src.Rules)
 		}
-		conv, err := bookConverter(src.CoordinateSystem)
+		conv, err := book.Converter(src.CoordinateSystem)
 		if err != nil {
 			return fmt.Errorf("%s: source %q: %v", path, src.ID, err)
 		}
 		for _, op := range src.Openings {
-			var seq []bookStone
+			var seq []book.Stone
 			var cellPath []int
 			var placedCells []int
 			bad := false
@@ -304,9 +305,9 @@ func (b *bookBuilder) walkSeeds(path string, size int) error {
 				}
 				b.s.makeMove(p, side)
 				placedCells = append(placedCells, p)
-				seq = append(seq, bookStone{x, y, 1})
+				seq = append(seq, book.Stone{X: x, Y: y, Role: 1})
 				if len(seq)%2 == 0 {
-					seq[len(seq)-1].role = -1
+					seq[len(seq)-1].Role = -1
 				}
 				cellPath = append(cellPath, p)
 			}
@@ -335,13 +336,13 @@ type bookBuilder struct {
 	margin    int
 	visited   map[string]bool
 	emitted   map[string]bool
-	openings  []bookOpeningJSON
+	openings  []book.Opening
 	budgetEnd time.Time
 	counter   int
 }
 
-func (b *bookBuilder) walk(seq []bookStone, path []int) {
-	key, _ := bookPositionKey(seq, b.s.n)
+func (b *bookBuilder) walk(seq []book.Stone, path []int) {
+	key, _ := book.PositionKey(seq, b.s.n)
 	if b.visited[key] {
 		b.emit(path) // transposition: the continuation is covered elsewhere
 		return
@@ -411,9 +412,9 @@ func (b *bookBuilder) walk(seq []bookStone, path []int) {
 			continue
 		}
 		b.s.makeMove(k.move, side)
-		st := bookStone{x: k.move % b.s.n, y: k.move / b.s.n, role: 1}
+		st := book.Stone{X: k.move % b.s.n, Y: k.move / b.s.n, Role: 1}
 		if side != playerMe {
-			st.role = -1
+			st.Role = -1
 		}
 		b.walk(append(seq, st), append(path, k.move))
 		b.s.undoMove(k.move, side)
@@ -426,7 +427,7 @@ func (b *bookBuilder) emit(path []int) {
 	if len(path) < 2 {
 		return
 	}
-	line := make([]bookStone, len(path))
+	line := make([]book.Stone, len(path))
 	coords := make([][]int, len(path))
 	for i, p := range path {
 		x, y := p%b.s.n, p/b.s.n
@@ -434,16 +435,16 @@ func (b *bookBuilder) emit(path []int) {
 		if i%2 == 1 {
 			role = -1
 		}
-		line[i] = bookStone{x, y, role}
+		line[i] = book.Stone{X: x, Y: y, Role: role}
 		coords[i] = []int{x, y}
 	}
-	key, _ := bookPositionKey(line, b.s.n)
+	key, _ := book.PositionKey(line, b.s.n)
 	if b.emitted[key] {
 		return
 	}
 	b.emitted[key] = true
 	b.counter++
-	b.openings = append(b.openings, bookOpeningJSON{
+	b.openings = append(b.openings, book.Opening{
 		ID:          fmt.Sprintf("auto-%03d", b.counter),
 		Coordinates: coords,
 	})

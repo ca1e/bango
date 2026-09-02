@@ -1,6 +1,7 @@
-package main
+package alphabeta
 
 import (
+	"gomoku/algorithm"
 	"math/rand"
 	"sync"
 	"testing"
@@ -988,37 +989,39 @@ func TestTTPersistAcrossMoves(t *testing.T) {
 	t.Logf("shared nodes=%d < fresh nodes=%d (%.0f%%)", sb.nodes, sf.nodes, 100*float64(sb.nodes)/float64(sf.nodes))
 }
 
-// TestTTFlushOnNewGame: resetSession drops the table — a new client must not
-// inherit positions from the previous game.
-func TestTTFlushOnNewGame(t *testing.T) {
-	e := NewEngine()
-	e.resetBoard(15)
-	if e.tt == nil {
-		t.Fatal("resetBoard did not allocate a persistent TT")
+// TestTTFlushOnSessionEnd: EndSession drops the table — a new client must
+// not inherit positions from the previous game, and a think must keep the
+// persistent table alive.
+func TestTTFlushOnSessionEnd(t *testing.T) {
+	a := New()
+	a.Reset(15, 0)
+	if a.tt == nil {
+		t.Fatal("Reset did not allocate a persistent TT")
 	}
-	e.place(7, 7, 1)
-	_, _ = e.aiMove()
-	if e.tt == nil {
-		t.Fatal("aiMove lost the persistent TT")
+	req := algorithm.Request{Size: 15, Board: make([]int, 15*15), TimeoutTurn: 50}
+	req.Board[7*15+7] = playerOpp
+	_, _ = a.Think(req)
+	if a.tt == nil {
+		t.Fatal("Think lost the persistent TT")
 	}
-	e.resetSession()
-	if e.tt != nil || e.ttBoardSz != 0 {
-		t.Fatal("resetSession must drop the persistent TT")
+	a.EndSession()
+	if a.tt != nil || a.ttBoardSz != 0 {
+		t.Fatal("EndSession must drop the persistent TT")
 	}
 }
 
 // TestTTKeptAcrossRestartSameSize: a same-size RESTART keeps the table — that
 // is the whole point of persistence; a resize reallocates.
 func TestTTKeptAcrossRestartSameSize(t *testing.T) {
-	e := NewEngine()
-	e.resetBoard(15)
-	tt := e.tt
-	e.resetBoard(15) // RESTART path
-	if e.tt != tt {
+	a := New()
+	a.Reset(15, 0)
+	tt := a.tt
+	a.Reset(15, 0) // RESTART path
+	if a.tt != tt {
 		t.Fatal("same-size restart must keep the persistent TT")
 	}
-	e.resetBoard(20)
-	if e.tt == tt {
+	a.Reset(20, 0)
+	if a.tt == tt {
 		t.Fatal("resize must reallocate the persistent TT")
 	}
 }

@@ -1,11 +1,12 @@
-package main
+package alphabeta
 
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"gomoku/book"
 )
 
 const testBookBody = `{"id":"t","name":"test book","rules":"freestyle","size":9,
@@ -19,7 +20,7 @@ func bookTestSearcher(t *testing.T) *searcher {
 	if err := os.WriteFile(filepath.Join(dir, "book.json"), []byte(testBookBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cb, err := loadBookFile(filepath.Join(dir, "book.json"))
+	cb, err := book.LoadFile(filepath.Join(dir, "book.json"))
 	if err != nil {
 		t.Fatalf("load book: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestEngineBookThreatGuard(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "book.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cb, err := loadBookFile(filepath.Join(dir, "book.json"))
+	cb, err := book.LoadFile(filepath.Join(dir, "book.json"))
 	if err != nil {
 		t.Fatalf("load book: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestEngineBookForbiddenFiltered(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "book.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cb, err := loadBookFile(filepath.Join(dir, "book.json"))
+	cb, err := book.LoadFile(filepath.Join(dir, "book.json"))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -134,13 +135,13 @@ func TestEngineBookForbiddenFiltered(t *testing.T) {
 	if !s.isForbidden(reply, s.blackSide) {
 		t.Fatal("test setup: (4,5) should be a 3-3 forbidden point")
 	}
-	raw := cb.movesFor([]bookStone{
-		{4, 3, 1}, {8, 0, -1}, {4, 4, 1}, {0, 8, -1},
-		{3, 6, 1}, {8, 8, -1}, {2, 7, 1}, {0, 0, -1},
+	raw := cb.MovesFor([]book.Stone{
+		{X: 4, Y: 3, Role: 1}, {X: 8, Y: 0, Role: -1}, {X: 4, Y: 4, Role: 1}, {X: 0, Y: 8, Role: -1},
+		{X: 3, Y: 6, Role: 1}, {X: 8, Y: 8, Role: -1}, {X: 2, Y: 7, Role: 1}, {X: 0, Y: 0, Role: -1},
 	})
 	found := false
 	for _, c := range raw {
-		if c.move == reply {
+		if c.Move == reply {
 			found = true
 		}
 	}
@@ -148,37 +149,12 @@ func TestEngineBookForbiddenFiltered(t *testing.T) {
 		t.Fatal("test setup: the raw book does not offer (4,5) for this prefix")
 	}
 	for _, c := range s.bookCandidates() {
-		if c.move == reply {
+		if c.Move == reply {
 			t.Fatal("forbidden point (4,5) survived the book candidate filter")
 		}
-		if s.isForbidden(c.move, s.blackSide) {
-			t.Fatalf("forbidden move %d offered by book", c.move)
+		if s.isForbidden(c.Move, s.blackSide) {
+			t.Fatalf("forbidden move %d offered by book", c.Move)
 		}
-	}
-}
-
-// TestEngineBookProtocol: end-to-end — a book file in the INFO folder is
-// loaded and the BOARD reply comes from the book.
-func TestEngineBookProtocol(t *testing.T) {
-	dir := t.TempDir()
-	sub := filepath.Join(dir, "pbrain-bango")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sub, "book.json"), []byte(testBookBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	s := startSession(t)
-	s.send("START 9")
-	expect(t, s, 2*time.Second, "OK")
-	s.send("INFO folder " + dir)
-	s.send("BOARD")
-	s.send("4,4,1")
-	s.send("6,3,2")
-	s.send("DONE")
-	x, y := expectMove(t, s, 5*time.Second, 9)
-	if x != 4 || y != 5 {
-		t.Fatalf("BOARD reply = (%d,%d), want book move (4,5)", x, y)
 	}
 }
 
@@ -194,7 +170,7 @@ func TestBookWhiteFreestyleAdoption(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "book.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cb, err := loadBookFile(filepath.Join(dir, "book.json"))
+	cb, err := book.LoadFile(filepath.Join(dir, "book.json"))
 	if err != nil {
 		t.Fatalf("load book: %v", err)
 	}
@@ -257,57 +233,13 @@ func TestHasOpenThreatShapes(t *testing.T) {
 	}
 }
 
-// TestFindDefaultBookPaths: the shipped openbook defaults are found relative
-// to the working directory (covers `go run .`, whose executable lives in a
-// temp dir); findBookPath itself no longer looks at openbook.
-func TestFindDefaultBookPaths(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "openbook"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "openbook", defaultBookFile), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	if got := findBookPath(""); got != "" {
-		t.Fatalf("findBookPath = %q, want empty (openbook is the defaults' job)", got)
-	}
-	paths := findDefaultBookPaths([]string{defaultBookFile})
-	if len(paths) != 1 || !strings.HasSuffix(paths[0], filepath.Join("openbook", defaultBookFile)) {
-		t.Fatalf("findDefaultBookPaths = %v, want the one existing openbook file", paths)
-	}
-}
-
-// TestDefaultBookShippedAndLoads: the repository's openbook default exists,
-// compiles, and matches the engine's default rule (freestyle 15×15).
-func TestDefaultBookShippedAndLoads(t *testing.T) {
-	e := NewEngine()
-	if cb := e.loadBook(); cb == nil {
-		t.Fatal("default openbook did not load from the package directory")
-	} else {
-		if cb.rule != RuleFreestyle || cb.size != 15 {
-			t.Fatalf("default book rule/size = %d/%d, want freestyle/15", cb.rule, cb.size)
-		}
-		if len(cb.positions) == 0 {
-			t.Fatal("default book compiled to zero positions")
-		}
-	}
-}
-
 // TestTranslatedFallbackClassicOnly: regression for the random-first-stone
 // opening quality finding — the displacement fallback must not adopt remote
 // replies. Every candidate for a non-tengen black opening (and the engine's
 // actual reply) is a contact/knight development, matching the opening prior.
 func TestTranslatedFallbackClassicOnly(t *testing.T) {
-	e := NewEngine()
-	if e.loadBook() == nil {
+	defaults := book.LoadDefaultBooks()
+	if defaults == nil {
 		t.Fatal("default adoption book did not load")
 	}
 	for _, black1 := range [][2]int{{6, 6}, {8, 7}, {5, 8}} {
@@ -315,19 +247,19 @@ func TestTranslatedFallbackClassicOnly(t *testing.T) {
 		b[black1[1]*15+black1[0]] = playerOpp // engine is white
 		s := newSearcher(15, b, 0)
 		s.setRule(RuleFreestyle, playerOpp)
-		s.book = e.book
+		s.book = defaults
 		cands := s.bookCandidates()
 		if len(cands) == 0 {
 			t.Fatalf("black1 %v: displacement fallback produced no candidates", black1)
 		}
 		for _, c := range cands {
-			if !s.classicOpeningPoint(c.move) {
+			if !s.classicOpeningPoint(c.Move) {
 				t.Fatalf("black1 %v: remote candidate (%d,%d) survived the classic filter",
-					black1, c.move%15, c.move/15)
+					black1, c.Move%15, c.Move/15)
 			}
 		}
 		x, y := s.run(8, 0)
-		if !s.classicOpeningPoint(y*15+x) {
+		if !s.classicOpeningPoint(y*15 + x) {
 			t.Fatalf("black1 %v: reply (%d,%d) is not a contact/knight development", black1, x, y)
 		}
 	}

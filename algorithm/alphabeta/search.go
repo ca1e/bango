@@ -1,9 +1,9 @@
-package main
+package alphabeta
 
 import (
+	"gomoku/book"
 	"os"
 	"sort"
-	"strconv"
 	"time"
 )
 
@@ -87,9 +87,9 @@ type searcher struct {
 	dirDirty           []uint8                       // per cell: stale bits, bit = d*2+(side-1)
 	rule               int                           // INFO rule code (0 = freestyle); see rules.go
 	blackSide          int                           // internal player owning black (renju forbidden side)
-	book               *compiledBook
-	modeBook           *compiledBook // classic 26-mode guidance book: theory-zone source only
-	bookViaTranslation bool          // last bookCandidates hit came from the displacement fallback
+	book               *book.Compiled
+	modeBook           *book.Compiled // classic 26-mode guidance book: theory-zone source only
+	bookViaTranslation bool           // last bookCandidates hit came from the displacement fallback
 	bookHits           int
 	bookAdopted        int
 	deadline           time.Time
@@ -293,64 +293,6 @@ func (s *searcher) nodeKey(side int) uint64 {
 	return s.hash ^ s.zo.side
 }
 
-// aiMove computes the engine's next move. It snapshots the shared board under
-// the mutex, then searches without holding it.
-func (e *Engine) aiMove() (int, int) {
-	e.mu.Lock()
-	n := e.size
-	b := make([]int, n*n)
-	for y := range e.board {
-		copy(b[y*n:(y+1)*n], e.board[y])
-	}
-	timeoutTurn := e.info.TimeoutTurn
-	timeLeft := e.info.TimeLeft
-	rule := e.info.Rule
-	ownBlack := e.ownIsBlack
-	tt := e.tt // borrowed for this think only; the Engine owns the lifecycle
-	e.mu.Unlock()
-
-	s := newSearcherWithTT(n, b, e.info.MaxMemory, tt)
-	// the role→black mapping is required even under freestyle: the opening
-	// book's keys are colour-encoded relative to black (bookCandidates), so
-	// a white engine must map playerOpp→black or every query key describes
-	// the colour-swapped position. Outside renju the forbidden-move logic
-	// ignores blackSide entirely, so this only feeds the book query.
-	black := playerMe
-	if !ownBlack {
-		black = playerOpp
-	}
-	s.setRule(rule, black)
-	if book := e.loadBook(); book != nil && book.rule == rule {
-		s.book = book
-	}
-	if modeBook := e.modeBook; modeBook != nil && modeBook.rule == rule && modeBook.size == n {
-		s.modeBook = modeBook
-	}
-	maxDepth := maxSearchDepth
-	if e.info.MaxDepth > 0 && e.info.MaxDepth < maxDepth {
-		maxDepth = e.info.MaxDepth
-	}
-	if e.info.MaxNode > 0 {
-		s.nodeLimit = e.info.MaxNode
-	}
-	if w := os.Getenv("BANGO_SMP"); w != "" {
-		if n, err := strconv.Atoi(w); err == nil && n > 1 {
-			s.smpWorkers = n
-		}
-	}
-	x, y := s.run(maxDepth, thinkBudget(timeoutTurn, timeLeft))
-	if x < 0 {
-		// no candidate produced (full board): fall back to the first empty cell
-		for p := 0; p < n*n; p++ {
-			if b[p] == 0 {
-				return p % n, p / n
-			}
-		}
-		return n / 2, n / 2
-	}
-	return x, y
-}
-
 // thinkBudget converts manager INFO values into a per-move time budget.
 // Per the Piskvork protocol all times are milliseconds. timeout_turn == 0
 // means "as fast as possible", which we map to a small default so the AI
@@ -470,7 +412,7 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 		// picks the actual first reply among the prior's classic cells
 		if !s.hasOpenThreat() && !s.bookViaTranslation {
 			s.bookAdopted++
-			return cands[0].move % n, cands[0].move / n
+			return cands[0].Move % n, cands[0].Move / n
 		}
 		s.applyBookOrdering(cands, moves)
 	}

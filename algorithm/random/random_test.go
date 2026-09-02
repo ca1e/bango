@@ -1,0 +1,233 @@
+package random
+
+import (
+	"math/rand"
+	"testing"
+
+	"gomoku/algorithm"
+)
+
+// buildReq assembles a Request from a stone map {coordinate: side}.
+func buildReq(n int, stones map[[2]int]int, last [2]int, hasLast bool) algorithm.Request {
+	b := make([]int, n*n)
+	for pt, side := range stones {
+		b[pt[1]*n+pt[0]] = side
+	}
+	return algorithm.Request{
+		Size:    n,
+		Board:   b,
+		HasLast: hasLast,
+		LastX:   last[0],
+		LastY:   last[1],
+	}
+}
+
+// TestRandomOpensAtTengen: an empty board must answer with the tengen
+// (天元), whatever the board size.
+func TestRandomOpensAtTengen(t *testing.T) {
+	for _, n := range []int{9, 15, 20} {
+		a := newWithRand(rand.New(rand.NewSource(1)))
+		x, y := a.Think(buildReq(n, nil, [2]int{}, false))
+		if x != n/2 || y != n/2 {
+			t.Fatalf("size %d: empty board = (%d,%d), want tengen (%d,%d)", n, x, y, n/2, n/2)
+		}
+	}
+}
+
+// TestRandomPlaysInContactZone: with one stone every reply lies within
+// Chebyshev distance 2 of it, on an empty cell — and the draw actually
+// varies (the point of a random algorithm).
+func TestRandomPlaysInContactZone(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(7)))
+	stones := map[[2]int]int{{4, 4}: 2}
+	seen := make(map[[2]int]bool)
+	for i := 0; i < 500; i++ {
+		req := buildReq(n, stones, [2]int{4, 4}, true)
+		x, y := a.Think(req)
+		if req.Board[y*n+x] != 0 {
+			t.Fatalf("draw %d: played on an occupied cell (%d,%d)", i, x, y)
+		}
+		dx, dy := x-4, y-4
+		if dx < 0 {
+			dx = -dx
+		}
+		if dy < 0 {
+			dy = -dy
+		}
+		if dx > 2 || dy > 2 {
+			t.Fatalf("draw %d: (%d,%d) outside the Chebyshev-2 contact zone", i, x, y)
+		}
+		seen[[2]int{x, y}] = true
+	}
+	// with the minimum-distance rule the pool is the 8 ring-1 cells around
+	// the lone stone; the draw must still not collapse onto a couple of them
+	if len(seen) < 6 {
+		t.Fatalf("only %d distinct cells drawn — not random enough", len(seen))
+	}
+}
+
+// TestRandomBlocksJumpFive: 跳连 — four same-side stones with exactly one
+// gap in a 5-span (x.xxx) must be answered by taking the gap.
+func TestRandomBlocksJumpFive(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(3)))
+	// opponent (side 2): X.XXX on row 4, the last move closed the XXX part
+	stones := map[[2]int]int{
+		{3, 4}: 2, {5, 4}: 2, {6, 4}: 2, {7, 4}: 2,
+		{0, 0}: 1, // one own stone far away
+	}
+	for i := 0; i < 50; i++ {
+		x, y := a.Think(buildReq(n, stones, [2]int{7, 4}, true))
+		if x != 4 || y != 4 {
+			t.Fatalf("draw %d: jump five answered at (%d,%d), want the gap (4,4)", i, x, y)
+		}
+	}
+}
+
+// TestRandomBlocksBlockedStraightFour: a straight four with one open end
+// must be answered at that end (a five-threat window too).
+func TestRandomBlocksBlockedStraightFour(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(4)))
+	stones := map[[2]int]int{
+		{2, 4}: 1,                                  // engine blocks the west end
+		{3, 4}: 2, {4, 4}: 2, {5, 4}: 2, {6, 4}: 2, // opponent four, east end open
+	}
+	for i := 0; i < 50; i++ {
+		x, y := a.Think(buildReq(n, stones, [2]int{6, 4}, true))
+		if x != 7 || y != 4 {
+			t.Fatalf("draw %d: straight four answered at (%d,%d), want (7,4)", i, x, y)
+		}
+	}
+}
+
+// TestRandomBlocksOpenFourAtEitherEnd: an open four offers two five windows
+// — the reply must be one of the two ends.
+func TestRandomBlocksOpenFourAtEitherEnd(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(5)))
+	stones := map[[2]int]int{
+		{3, 4}: 2, {4, 4}: 2, {5, 4}: 2, {6, 4}: 2,
+		{0, 0}: 1,
+	}
+	for i := 0; i < 100; i++ {
+		x, y := a.Think(buildReq(n, stones, [2]int{6, 4}, true))
+		if !((x == 2 && y == 4) || (x == 7 && y == 4)) {
+			t.Fatalf("draw %d: open four answered at (%d,%d), want an end (2,4)/(7,4)", i, x, y)
+		}
+	}
+}
+
+// TestRandomBlocksOpenThreeNearEndFirst: 活三 → block one of the two ends,
+// random but proximity-weighted: the end nearer the last move must come up
+// clearly more often.
+func TestRandomBlocksOpenThreeNearEndFirst(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(6)))
+	stones := map[[2]int]int{
+		{3, 4}: 2, {4, 4}: 2, {5, 4}: 2, // open three, last stone on its east end
+		{0, 0}: 1,
+	}
+	near, far := 0, 0
+	for i := 0; i < 600; i++ {
+		x, y := a.Think(buildReq(n, stones, [2]int{5, 4}, true))
+		switch {
+		case x == 6 && y == 4: // distance 1 from (5,4)
+			near++
+		case x == 2 && y == 4: // distance 3 from (5,4)
+			far++
+		default:
+			t.Fatalf("draw %d: open three answered at (%d,%d), want an end (6,4)/(2,4)", i, x, y)
+		}
+	}
+	if near <= far {
+		t.Fatalf("proximity weighting inverted: near-end %d vs far-end %d", near, far)
+	}
+}
+
+// TestRandomPlaysOnlyAtMinimumDistance: in the plain random phase every
+// reply must sit in the ring at minimum Chebyshev distance from the last
+// move — never one ring further out.
+func TestRandomPlaysOnlyAtMinimumDistance(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(8)))
+	stones := map[[2]int]int{{4, 4}: 2}
+	seen := make(map[[2]int]bool)
+	for i := 0; i < 3000; i++ {
+		x, y := a.Think(buildReq(n, stones, [2]int{4, 4}, true))
+		if x < 3 || x > 5 || y < 3 || y > 5 {
+			t.Fatalf("draw %d: (%d,%d) is not at Chebyshev distance 1 from (4,4)", i, x, y)
+		}
+		seen[[2]int{x, y}] = true
+	}
+	// the ring-1 set is 8 cells; the draw must not collapse onto one or two
+	if len(seen) < 6 {
+		t.Fatalf("only %d distinct cells drawn inside the minimum ring — tie draw broken", len(seen))
+	}
+}
+
+// TestRandomAnchorsDistanceOnLastMove: the ranking key is the last move, not
+// the nearest stone — a last move far from the cluster drags the reply to
+// its own ring 1.
+func TestRandomAnchorsDistanceOnLastMove(t *testing.T) {
+	const n = 15
+	a := newWithRand(rand.New(rand.NewSource(11)))
+	stones := map[[2]int]int{
+		{7, 7}: 1, {8, 8}: 2, // a cluster around the tengen
+		{3, 3}: 2, // the last move, far from the cluster
+	}
+	for i := 0; i < 200; i++ {
+		x, y := a.Think(buildReq(n, stones, [2]int{3, 3}, true))
+		if x < 2 || x > 4 || y < 2 || y > 4 {
+			t.Fatalf("draw %d: answered at (%d,%d), want ring-1 of the last move (3,3)", i, x, y)
+		}
+	}
+}
+
+// TestRandomNoLastMoveFallsBackToNearestStone: without last-move info the
+// ranking key becomes the distance to the nearest stone — with a single
+// stone on the board the reply hugs it.
+func TestRandomNoLastMoveFallsBackToNearestStone(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(12)))
+	stones := map[[2]int]int{{2, 2}: 2}
+	for i := 0; i < 200; i++ {
+		x, y := a.Think(buildReq(n, stones, [2]int{}, false))
+		if x < 1 || x > 3 || y < 1 || y > 3 {
+			t.Fatalf("draw %d: answered at (%d,%d), want ring-1 of the only stone (2,2)", i, x, y)
+		}
+	}
+}
+
+// TestRandomNeverPlaysOccupiedOnBusyBoard: on a midgame position the reply
+// is always an empty in-bounds cell.
+func TestRandomNeverPlaysOccupiedOnBusyBoard(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(9)))
+	stones := map[[2]int]int{
+		{4, 4}: 2, {5, 5}: 1, {3, 5}: 1, {5, 3}: 2, {4, 6}: 1, {6, 4}: 2,
+	}
+	for i := 0; i < 300; i++ {
+		req := buildReq(n, stones, [2]int{6, 4}, true)
+		x, y := a.Think(req)
+		if x < 0 || x >= n || y < 0 || y >= n || req.Board[y*n+x] != 0 {
+			t.Fatalf("draw %d: illegal reply (%d,%d)", i, x, y)
+		}
+	}
+}
+
+// TestRandomRegisteredInTheAlgorithmSet: the registry hands out the random
+// algorithm by name.
+func TestRandomRegisteredInTheAlgorithmSet(t *testing.T) {
+	algo, err := algorithm.New(AlgorithmName)
+	if err != nil {
+		t.Fatalf("registry lookup: %v", err)
+	}
+	if algo.Name() != AlgorithmName {
+		t.Fatalf("name = %q, want %q", algo.Name(), AlgorithmName)
+	}
+	// Reset/EndSession must be safe no-ops on a stateless algorithm
+	algo.Reset(15, 0)
+	algo.EndSession()
+}

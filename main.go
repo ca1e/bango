@@ -9,6 +9,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"gomoku/algorithm/alphabeta" // register the alphabeta algorithm (registry import)
+	_ "gomoku/algorithm/random"  // register the random algorithm
 )
 
 func main() {
@@ -23,7 +26,7 @@ func main() {
 			runWebMode(NewEngine(), *addr, *port)
 			return
 		case "book":
-			runBookCommand(os.Args[2:])
+			alphabeta.RunBookCommand(os.Args[2:])
 			return
 		case "help", "-h", "-help", "--help":
 			usage()
@@ -480,36 +483,13 @@ func (e *Engine) cmdSwap2(cmd Command) {
 		}
 	}
 
-	// evaluate the position from black's perspective
-	b := make([]int, n*n)
-	for i, pt := range cmd.Pts {
-		p := pt[1]*n + pt[0]
-		if i%2 == 0 {
-			b[p] = playerMe
-		} else {
-			b[p] = playerOpp
-		}
-	}
-	s := newSearcher(n, b, 0)
-	s.setRule(rule, playerMe)
-	if s.evaluate() >= scoreLiveThree {
+	// the swap2 decision needs search internals: evaluate the stones as
+	// black, either swap or answer with white's next stone (alphabeta pkg)
+	x, y, swap := alphabeta.Swap2Reply(n, rule, cmd.Pts, timeoutTurn, timeLeft)
+	if swap {
 		e.writeLine("SWAP")
 		return
 	}
-
-	// stay white: rebuild with our stones as playerMe and play the next stone
-	b2 := make([]int, n*n)
-	for i, pt := range cmd.Pts {
-		p := pt[1]*n + pt[0]
-		if i%2 == 0 {
-			b2[p] = playerOpp
-		} else {
-			b2[p] = playerMe
-		}
-	}
-	s2 := newSearcher(n, b2, 0)
-	s2.setRule(rule, playerOpp) // black belongs to the opponent now
-	x, y := s2.run(maxSearchDepth, thinkBudget(timeoutTurn, timeLeft))
 	e.writeLine(itoa(x) + "," + itoa(y))
 }
 
@@ -538,10 +518,10 @@ func (e *Engine) cmdInfo(cmd Command) {
 		e.info.TimeoutMatch = atoiOrZero(value)
 	case "max_memory":
 		e.info.MaxMemory = atoi64OrZero(value)
-		// the persistent TT follows the budget: rebuild immediately so the
-		// next think already respects the new limit (ensureTTLocked keeps
-		// the old table when neither size nor budget changed)
-		e.ensureTTLocked(e.size)
+		// the algorithm's per-game caches follow the budget: notify it now
+		// so the next think already respects the new limit (Reset keeps the
+		// old table when neither size nor budget changed)
+		e.algo.Reset(e.size, e.info.MaxMemory)
 	case "max_depth":
 		e.info.MaxDepth = atoiOrZero(value)
 	case "max_node":

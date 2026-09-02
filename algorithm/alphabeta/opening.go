@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 // Classic opening modes (开局 26 式): black opens at the tengen, white
 // answers direct (orthogonal-adjacent) or diagonal, and black's second move
@@ -7,12 +7,13 @@ package main
 // diagonal classes — 26 modes in total.
 //
 // The enumeration and the classifier share one machine with the opening
-// book's canonicalisation (bookPositionKey): a mode is the canonical key of
+// book's canonicalisation (book.PositionKey): a mode is the canonical key of
 // its three-stone set, and the frame transform maps the classic book's
 // replies between the canonical and the actual board orientation.
 
 import (
 	"fmt"
+	"gomoku/book"
 	"sort"
 	"strings"
 )
@@ -33,12 +34,12 @@ func classicOpeningSeeds(size int) [][]int {
 				if (bx == 0 && by == 0) || (bx == base[0] && by == base[1]) {
 					continue // tengen / white stone occupied
 				}
-				stones := []bookStone{
-					{c, c, 1},
-					{wx, wy, -1},
-					{c + bx, c + by, 1},
+				stones := []book.Stone{
+					{X: c, Y: c, Role: 1},
+					{X: wx, Y: wy, Role: -1},
+					{X: c + bx, Y: c + by, Role: 1},
 				}
-				key, _ := bookPositionKey(stones, size)
+				key, _ := book.PositionKey(stones, size)
 				if seen[key] {
 					continue // symmetric twin of an earlier class
 				}
@@ -54,7 +55,7 @@ func classicOpeningSeeds(size int) [][]int {
 // three-stone frame ([tengen, white, black2]) and the transform t that maps
 // board stones into it (t⁻¹ maps book replies back to the board).
 type openingFrame struct {
-	canon []bookStone
+	canon []book.Stone
 	t     int
 	id    string // canonical key — the mode's identity
 }
@@ -100,20 +101,20 @@ func openingModeOf(s *searcher) (openingFrame, bool) {
 		return openingFrame{}, false // no (or ambiguous) white reply
 	}
 
-	stones := []bookStone{
-		{c, c, 1},
-		{whiteAdj[0] % n, whiteAdj[0] / n, -1},
-		{black2 % n, black2 / n, 1},
+	stones := []book.Stone{
+		{X: c, Y: c, Role: 1},
+		{X: whiteAdj[0] % n, Y: whiteAdj[0] / n, Role: -1},
+		{X: black2 % n, Y: black2 / n, Role: 1},
 	}
 	// find the min-encoding transform — the canonical frame of this mode.
-	// Must mirror bookPositionKey exactly: per transform the parts are SORTED
+	// Must mirror book.PositionKey exactly: per transform the parts are SORTED
 	// before joining, so the keys match the compiled book's map.
 	best, bestT := "", -1
 	for t := 0; t < 8; t++ {
 		parts := make([]string, 0, 3)
 		for _, st := range stones {
-			tx, ty := transformPoint(st.x, st.y, n, t)
-			parts = append(parts, fmt.Sprintf("%d,%d,%d", tx, ty, st.role))
+			tx, ty := book.TransformPoint(st.X, st.Y, n, t)
+			parts = append(parts, fmt.Sprintf("%d,%d,%d", tx, ty, st.Role))
 		}
 		sort.Strings(parts)
 		enc := strings.Join(parts, ";")
@@ -121,10 +122,10 @@ func openingModeOf(s *searcher) (openingFrame, bool) {
 			best, bestT = enc, t
 		}
 	}
-	canonical := make([]bookStone, len(stones))
+	canonical := make([]book.Stone, len(stones))
 	for i, st := range stones {
-		tx, ty := transformPoint(st.x, st.y, n, bestT)
-		canonical[i] = bookStone{tx, ty, st.role}
+		tx, ty := book.TransformPoint(st.X, st.Y, n, bestT)
+		canonical[i] = book.Stone{X: tx, Y: ty, Role: st.Role}
 	}
 	return openingFrame{canon: canonical, t: bestT, id: fmt.Sprintf("%d|%s", n, best)}, true
 }
@@ -135,22 +136,22 @@ func openingModeOf(s *searcher) (openingFrame, bool) {
 // a soft prior (they rank first and stay in the candidate list); the search
 // still decides.
 func (s *searcher) modeTheoryZone() map[int]bool {
-	if s.modeBook == nil || s.modeBook.rule != s.rule || s.modeBook.size != s.n {
+	if s.modeBook == nil || s.modeBook.Rule != s.rule || s.modeBook.Size != s.n {
 		return nil
 	}
 	fr, ok := openingModeOf(s)
 	if !ok {
 		return nil
 	}
-	weights := s.modeBook.positions[fr.id]
+	weights := s.modeBook.PositionReplies(fr.id)
 	if len(weights) == 0 {
 		return nil
 	}
-	inv := bookInverseTransforms[fr.t]
+	inv := fr.t
 	zone := make(map[int]bool, len(weights))
 	for mk := range weights {
-		cx, cy := mk/s.modeBook.size, mk%s.modeBook.size // compileBook stores x-major
-		bx, by := transformPoint(cx, cy, s.n, inv)
+		cx, cy := mk/s.modeBook.Size, mk%s.modeBook.Size // compileBook stores x-major
+		bx, by := book.InverseTransform(cx, cy, s.n, inv)
 		zone[by*s.n+bx] = true
 	}
 	return zone

@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 // Transposition table backed by Zobrist hashing.
 //

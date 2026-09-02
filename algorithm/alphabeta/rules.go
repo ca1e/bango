@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 // Rule-dependent win judgement and renju forbidden-move detection.
 //
@@ -18,7 +18,10 @@ package main
 // stays undisturbed. Per RIF, five always overrides a forbidden shape: a
 // move completing exactly five is never forbidden.
 
-import "sort"
+import (
+	"gomoku/book"
+	"sort"
+)
 
 const (
 	RuleFreestyle    = 0
@@ -164,12 +167,12 @@ func (s *searcher) inlineStones(p, side int) int {
 // game, the position isn't covered, or every candidate was dropped
 // (occupied / renju-forbidden for the mover). Guard rails mirror the
 // gobang original: the book only speaks in quiet openings.
-func (s *searcher) bookCandidates() []bookCandidate {
+func (s *searcher) bookCandidates() []book.Candidate {
 	cb := s.book
-	if cb == nil || cb.rule != s.rule || cb.size != s.n {
+	if cb == nil || cb.Rule != s.rule || cb.Size != s.n {
 		return nil
 	}
-	stones := make([]bookStone, 0, 16)
+	stones := make([]book.Stone, 0, 16)
 	blackCount, whiteCount := 0, 0
 	for p, v := range s.b {
 		if v == 0 {
@@ -180,17 +183,17 @@ func (s *searcher) bookCandidates() []bookCandidate {
 		}
 		if v == s.blackSide {
 			blackCount++
-			stones = append(stones, bookStone{p % s.n, p / s.n, 1})
+			stones = append(stones, book.Stone{X: p % s.n, Y: p / s.n, Role: 1})
 		} else {
 			whiteCount++
-			stones = append(stones, bookStone{p % s.n, p / s.n, -1})
+			stones = append(stones, book.Stone{X: p % s.n, Y: p / s.n, Role: -1})
 		}
 	}
 	if len(stones) == 0 {
 		return nil // empty board: the engine opens by search (tutorial behavior)
 	}
 
-	cands := cb.movesFor(stones)
+	cands := cb.MovesFor(stones)
 	if len(cands) == 0 && len(stones) == 1 {
 		// displacement generalization: a line's first→second offset only
 		// transfers meaningfully when it lands in the contact zone — remote
@@ -198,8 +201,8 @@ func (s *searcher) bookCandidates() []bookCandidate {
 		// produce geometrically arbitrary first replies and bypass the
 		// opening prior's classic-opening filter. Same criterion, applied
 		// before adoption.
-		for _, c := range cb.translatedFirstMoves(stones[0].x, stones[0].y) {
-			if s.classicOpeningPoint(c.move) {
+		for _, c := range cb.TranslatedFirstMoves(stones[0].X, stones[0].Y) {
+			if s.classicOpeningPoint(c.Move) {
 				cands = append(cands, c)
 			}
 		}
@@ -214,12 +217,12 @@ func (s *searcher) bookCandidates() []bookCandidate {
 
 	// side to move: black on equal counts, white otherwise
 	moverIsBlack := blackCount == whiteCount
-	out := make([]bookCandidate, 0, len(cands))
+	out := make([]book.Candidate, 0, len(cands))
 	for _, c := range cands {
-		if s.b[c.move] != 0 {
+		if s.b[c.Move] != 0 {
 			continue
 		}
-		if moverIsBlack && s.isForbidden(c.move, s.blackSide) {
+		if moverIsBlack && s.isForbidden(c.Move, s.blackSide) {
 			continue // renju: a forbidden point never reaches the search
 		}
 		out = append(out, c)
@@ -267,10 +270,10 @@ func (s *searcher) hasOpenThreat() bool {
 // applyBookOrdering reorders the root candidates so the book's preferred
 // moves are searched first (rank 0 = not in book). The search itself still
 // decides — the book only steers the ordering.
-func (s *searcher) applyBookOrdering(cands []bookCandidate, moves []int) {
+func (s *searcher) applyBookOrdering(cands []book.Candidate, moves []int) {
 	rank := make([]int, s.n*s.n)
 	for i, c := range cands {
-		rank[c.move] = len(cands) - i
+		rank[c.Move] = len(cands) - i
 	}
 	sort.SliceStable(moves, func(i, j int) bool { return rank[moves[i]] > rank[moves[j]] })
 }

@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 // VCF/VCT search (tutorial ch.8 算杀): a proof search over forcing moves only.
 //

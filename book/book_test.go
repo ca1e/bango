@@ -1,16 +1,17 @@
-package main
+package book
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // lineSource builds a single-source JSON book from a literal body.
-func lineSource(t *testing.T, body string) *bookSourceJSON {
+func lineSource(t *testing.T, body string) *Source {
 	t.Helper()
-	var src bookSourceJSON
+	var src Source
 	if err := json.Unmarshal([]byte(body), &src); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -25,7 +26,7 @@ func TestBookCompileAndQuery(t *testing.T) {
 		"coordinateSystem": "board-row-column",
 		"openings": [{"id": "a", "coordinates": [[4,4],[6,3],[4,5],[6,6],[3,3]]}]
 	}`)
-	cb, err := compileBook(src)
+	cb, err := compile(src)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -35,19 +36,19 @@ func TestBookCompileAndQuery(t *testing.T) {
 
 	// position after two stones (black (4,4), white (6,3)) → third move (4,5);
 	// the pair has no board symmetry, so exactly one candidate exists
-	stones := []bookStone{{4, 4, 1}, {6, 3, -1}}
-	cands := cb.movesFor(stones)
-	if len(cands) != 1 || cands[0].move != 5*9+4 {
+	stones := []Stone{{4, 4, 1}, {6, 3, -1}}
+	cands := cb.MovesFor(stones)
+	if len(cands) != 1 || cands[0].Move != 5*9+4 {
 		t.Fatalf("cands = %v, want move (4,5)", cands)
 	}
 	// after three stones → fourth move
-	stones = append(stones, bookStone{4, 5, 1})
-	cands = cb.movesFor(stones)
-	if len(cands) != 1 || cands[0].move != 6*9+6 {
+	stones = append(stones, Stone{4, 5, 1})
+	cands = cb.MovesFor(stones)
+	if len(cands) != 1 || cands[0].Move != 6*9+6 {
 		t.Fatalf("cands = %v, want move (6,6)", cands)
 	}
 	// unknown position → no candidates
-	if got := cb.movesFor([]bookStone{{0, 0, 1}, {1, 1, -1}}); len(got) != 0 {
+	if got := cb.MovesFor([]Stone{{0, 0, 1}, {1, 1, -1}}); len(got) != 0 {
 		t.Fatalf("unknown position returned %v", got)
 	}
 }
@@ -60,28 +61,28 @@ func TestBookSymmetryLookup(t *testing.T) {
 		"coordinateSystem": "board-row-column",
 		"openings": [{"id": "a", "coordinates": [[4,4],[4,3],[4,5],[3,4],[5,4]]}]
 	}`)
-	cb, err := compileBook(src)
+	cb, err := compile(src)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	base := []bookStone{{4, 4, 1}, {4, 3, -1}}
-	baseCands := cb.movesFor(base)
+	base := []Stone{{4, 4, 1}, {4, 3, -1}}
+	baseCands := cb.MovesFor(base)
 	// the position is x-mirror symmetric, so the reply's automorphic variants
 	// coincide on one cell and accumulate weight 2
-	if len(baseCands) != 1 || baseCands[0].move != 5*9+4 || baseCands[0].weight != 2 {
+	if len(baseCands) != 1 || baseCands[0].Move != 5*9+4 || baseCands[0].Weight != 2 {
 		t.Fatalf("base candidate = %v, want single (4,5) with weight 2", baseCands)
 	}
 	for tIdx := 0; tIdx < 8; tIdx++ {
-		symmetric := make([]bookStone, len(base))
+		symmetric := make([]Stone, len(base))
 		for i, st := range base {
-			x, y := transformPoint(st.x, st.y, 9, tIdx)
-			symmetric[i] = bookStone{x, y, st.role}
+			x, y := TransformPoint(st.X, st.Y, 9, tIdx)
+			symmetric[i] = Stone{x, y, st.Role}
 		}
 		// the reply cell expressed in the rotated frame
-		ex, ey := transformPoint(4, 5, 9, tIdx)
+		ex, ey := TransformPoint(4, 5, 9, tIdx)
 		want := ey*9 + ex
-		cands := cb.movesFor(symmetric)
-		if len(cands) != 1 || cands[0].move != want || cands[0].weight != 2 {
+		cands := cb.MovesFor(symmetric)
+		if len(cands) != 1 || cands[0].Move != want || cands[0].Weight != 2 {
 			t.Fatalf("transform %d: cands = %v, want single move %d with weight 2", tIdx, cands, want)
 		}
 	}
@@ -99,12 +100,12 @@ func TestBookWeightAccumulation(t *testing.T) {
 	if err := os.WriteFile(merged, []byte("["+srcA+","+srcB+"]"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a, err := loadBookFile(merged)
+	a, err := LoadFile(merged)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	cands := a.movesFor([]bookStone{{4, 4, 1}, {6, 3, -1}})
-	if len(cands) != 1 || cands[0].weight != 2 || cands[0].move != 5*9+4 {
+	cands := a.MovesFor([]Stone{{4, 4, 1}, {6, 3, -1}})
+	if len(cands) != 1 || cands[0].Weight != 2 || cands[0].Move != 5*9+4 {
 		t.Fatalf("cands = %v, want one candidate (4,5) with weight 2", cands)
 	}
 }
@@ -117,11 +118,11 @@ func TestBookSideEncodingRejected(t *testing.T) {
 		"coordinateSystem": "board-row-column",
 		"openings": [{"id": "a", "coordinates": [[4,4],[5,4],[4,5]]}]
 	}`)
-	cb, err := compileBook(src)
+	cb, err := compile(src)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if got := cb.movesFor([]bookStone{{4, 4, -1}, {5, 4, 1}}); len(got) != 0 {
+	if got := cb.MovesFor([]Stone{{4, 4, -1}, {5, 4, 1}}); len(got) != 0 {
 		t.Fatalf("color-swapped position hit the book: %v", got)
 	}
 }
@@ -134,18 +135,18 @@ func TestBookTranslatedFirstMoves(t *testing.T) {
 		"coordinateSystem": "board-row-column",
 		"openings": [{"id": "a", "coordinates": [[4,4],[5,4],[4,5],[6,6]]}]
 	}`)
-	cb, err := compileBook(src)
+	cb, err := compile(src)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 	// displacement (4,4)→(5,4) is (+1,0); anchored at (2,2) the reply is (3,2)
-	cands := cb.translatedFirstMoves(2, 2)
+	cands := cb.TranslatedFirstMoves(2, 2)
 	if len(cands) == 0 {
 		t.Fatal("no translated replies")
 	}
 	found := false
 	for _, c := range cands {
-		if c.move == 2*9+3 {
+		if c.Move == 2*9+3 {
 			found = true
 		}
 	}
@@ -155,13 +156,13 @@ func TestBookTranslatedFirstMoves(t *testing.T) {
 	// a lone center stone matches the book's first-stone position; the reply
 	// spreads over its automorphic variants (four orthogonal neighbours,
 	// weight 2 each — the two folds of each direction)
-	got := cb.movesFor([]bookStone{{4, 4, 1}})
+	got := cb.MovesFor([]Stone{{4, 4, 1}})
 	if len(got) != 4 {
 		t.Fatalf("center-stone lookup = %v, want 4 neighbour candidates", got)
 	}
 	for _, c := range got {
-		if c.weight != 2 {
-			t.Fatalf("candidate %v has weight %d, want 2", c, c.weight)
+		if c.Weight != 2 {
+			t.Fatalf("candidate %v has weight %d, want 2", c, c.Weight)
 		}
 	}
 }
@@ -174,13 +175,13 @@ func TestBookCenterRelativeConversion(t *testing.T) {
 		"coordinateSystem": "center-relative-x-y",
 		"openings": [{"id": "a", "coordinates": [[-2,1],[1,-2],[2,0]]}]
 	}`)
-	cb, err := compileBook(src)
+	cb, err := compile(src)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 	// [-2,1] -> (6,5); [1,-2] -> (9,8); the reply [2,0] -> (7,9)
-	cands := cb.movesFor([]bookStone{{6, 5, 1}, {9, 8, -1}})
-	if len(cands) != 1 || cands[0].move != 9*15+7 {
+	cands := cb.MovesFor([]Stone{{6, 5, 1}, {9, 8, -1}})
+	if len(cands) != 1 || cands[0].Move != 9*15+7 {
 		t.Fatalf("cands = %v, want (7,9)", cands)
 	}
 }
@@ -196,13 +197,13 @@ func TestBookRejectsUnsupported(t *testing.T) {
 	}
 	for _, body := range bad {
 		src := lineSource(t, body)
-		if _, err := compileBook(src); err == nil {
+		if _, err := compile(src); err == nil {
 			t.Errorf("compile accepted bad source: %s", body)
 		}
 	}
 }
 
-// TestLoadBookFileAndPath: array files merge; findBookPath prefers the INFO
+// TestLoadBookFileAndPath: array files merge; FindBookPath prefers the INFO
 // folder's brain subfolder and falls back to the executable directory.
 func TestLoadBookFileAndPath(t *testing.T) {
 	dir := t.TempDir()
@@ -212,12 +213,12 @@ func TestLoadBookFileAndPath(t *testing.T) {
 	if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cb, err := loadBookFile(file)
+	cb, err := LoadFile(file)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cb.rule != RuleRenju || cb.size != 9 {
-		t.Fatalf("rule/size = %d/%d", cb.rule, cb.size)
+	if cb.Rule != RuleRenju || cb.Size != 9 {
+		t.Fatalf("rule/size = %d/%d", cb.Rule, cb.Size)
 	}
 
 	// with the repository's openbook/ default present the cwd fallback finds
@@ -228,8 +229,8 @@ func TestLoadBookFileAndPath(t *testing.T) {
 		if err := os.Chdir(empty); err != nil {
 			t.Fatal(err)
 		}
-		if got := findBookPath(""); got != "" {
-			t.Fatalf("findBookPath without any candidate file = %q", got)
+		if got := FindBookPath(""); got != "" {
+			t.Fatalf("FindBookPath without any candidate file = %q", got)
 		}
 		if err := os.Chdir(wd); err != nil {
 			t.Fatal(err)
@@ -243,7 +244,50 @@ func TestLoadBookFileAndPath(t *testing.T) {
 	if err := os.WriteFile(bookPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := findBookPath(dir); got != bookPath {
-		t.Fatalf("findBookPath = %q, want %q", got, bookPath)
+	if got := FindBookPath(dir); got != bookPath {
+		t.Fatalf("FindBookPath = %q, want %q", got, bookPath)
+	}
+}
+
+// TestFindDefaultBookPaths: the shipped openbook defaults are found relative
+// to the working directory (covers `go run .`, whose executable lives in a
+// temp dir); FindBookPath itself no longer looks at openbook.
+func TestFindDefaultBookPaths(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "openbook"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "openbook", defaultBookFile), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindBookPath(""); got != "" {
+		t.Fatalf("FindBookPath = %q, want empty (openbook is the defaults' job)", got)
+	}
+	paths := FindDefaultBookPaths([]string{defaultBookFile})
+	if len(paths) != 1 || !strings.HasSuffix(paths[0], filepath.Join("openbook", defaultBookFile)) {
+		t.Fatalf("FindDefaultBookPaths = %v, want the one existing openbook file", paths)
+	}
+}
+
+// TestDefaultBookShippedAndLoads: the repository's openbook default exists,
+// compiles, and matches the engine's default rule (freestyle 15×15).
+func TestDefaultBookShippedAndLoads(t *testing.T) {
+	cb := LoadDefaultBooks()
+	if cb == nil {
+		t.Fatal("default openbook did not load from the package directory")
+	}
+	if cb.Rule != RuleFreestyle || cb.Size != 15 {
+		t.Fatalf("default book rule/size = %d/%d, want freestyle/15", cb.Rule, cb.Size)
+	}
+	if len(cb.positions) == 0 {
+		t.Fatal("default book compiled to zero positions")
 	}
 }

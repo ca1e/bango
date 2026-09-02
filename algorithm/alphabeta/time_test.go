@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 // Time-control and interruption paths: the budget formula, the abort
 // fallbacks, and the invariant that an aborted search leaves no trace in the

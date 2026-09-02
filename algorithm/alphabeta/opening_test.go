@@ -1,10 +1,12 @@
-package main
+package alphabeta
 
 // Classic opening mode tests: enumeration, recognition, and the theory-zone
 // prior projection.
 
 import (
 	"testing"
+
+	"gomoku/book"
 )
 
 func TestClassicSeeds26Modes(t *testing.T) {
@@ -34,8 +36,8 @@ func TestClassicSeeds26Modes(t *testing.T) {
 		default:
 			t.Fatalf("seed %v: white reply is neither direct nor diagonal", s)
 		}
-		stones := []bookStone{{s[0], s[1], 1}, {s[2], s[3], -1}, {s[4], s[5], 1}}
-		key, _ := bookPositionKey(stones, 15)
+		stones := []book.Stone{{X: s[0], Y: s[1], Role: 1}, {X: s[2], Y: s[3], Role: -1}, {X: s[4], Y: s[5], Role: 1}}
+		key, _ := book.PositionKey(stones, 15)
 		if seen[key] {
 			t.Fatalf("seed %v duplicates a canonical mode", s)
 		}
@@ -98,11 +100,8 @@ func TestOpeningModeOfFrames(t *testing.T) {
 }
 
 func TestModeTheoryZoneProjection(t *testing.T) {
-	e := NewEngine()
-	if e.loadBook() == nil {
-		t.Fatal("default adoption book did not load")
-	}
-	if e.modeBook == nil {
+	modeBook := book.LoadModeBook()
+	if modeBook == nil {
 		t.Fatal("classic mode book did not load")
 	}
 	// a recognized mode in a non-canonical orientation: tengen + direct white
@@ -113,7 +112,7 @@ func TestModeTheoryZoneProjection(t *testing.T) {
 	b[5*15+5] = playerOpp
 	s := newSearcher(15, b, 0)
 	s.setRule(RuleFreestyle, playerOpp)
-	s.modeBook = e.modeBook
+	s.modeBook = modeBook
 	zone := s.modeTheoryZone()
 	if zone == nil {
 		t.Fatal("recognized mode without theory zone (classic book missing?)")
@@ -140,21 +139,21 @@ func TestModeTheoryZoneProjection(t *testing.T) {
 	b1[7*15+7] = playerOpp
 	s1 := newSearcher(15, b1, 0)
 	s1.setRule(RuleFreestyle, playerOpp)
-	s1.modeBook = e.modeBook
+	s1.modeBook = modeBook
 	if s1.modeTheoryZone() != nil {
 		t.Fatal("single-stone position produced a theory zone")
 	}
 	s3 := newSearcher(15, b, 0) // no setRule: blackSide = playerMe, tengen not black
-	s3.modeBook = e.modeBook
+	s3.modeBook = modeBook
 	if s3.modeTheoryZone() != nil {
 		t.Fatal("non-classic position produced a theory zone")
 	}
 }
 
 func TestOpeningPriorRanksTheoryCells(t *testing.T) {
-	e := NewEngine()
-	if e.loadBook() == nil || e.modeBook == nil {
-		t.Fatal("default books did not load")
+	modeBook := book.LoadModeBook()
+	if modeBook == nil {
+		t.Fatal("classic mode book did not load")
 	}
 	b := make([]int, 225)
 	b[7*15+7] = playerOpp
@@ -162,7 +161,7 @@ func TestOpeningPriorRanksTheoryCells(t *testing.T) {
 	b[5*15+5] = playerOpp
 	s := newSearcher(15, b, 0)
 	s.setRule(RuleFreestyle, playerOpp)
-	s.modeBook = e.modeBook
+	s.modeBook = modeBook
 	zone := s.modeTheoryZone()
 	if zone == nil {
 		t.Fatal("no theory zone")

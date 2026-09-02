@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 import (
 	"math/rand"
@@ -378,19 +378,6 @@ func max(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func TestEngineAiMoveSmoke(t *testing.T) {
-	e := NewEngine()
-	e.resetBoard(9)
-	e.info.TimeoutTurn = 200 // ms
-	e.place(4, 4, 2)
-	e.place(5, 5, 1)
-
-	x, y := e.aiMove()
-	if x < 0 || x >= 9 || y < 0 || y >= 9 || e.board[y][x] != 0 {
-		t.Errorf("aiMove returned illegal cell (%d,%d)", x, y)
-	}
 }
 
 // TestQuiescenceGateQuietPosition: without a freshly created four the gate

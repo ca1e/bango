@@ -1,4 +1,4 @@
-package main
+package alphabeta
 
 import (
 	"encoding/json"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"gomoku/book"
 )
 
 // writeBook writes a book source file and returns its path.
@@ -79,16 +81,17 @@ func TestBookBuildEndToEnd(t *testing.T) {
 	if err := bookValidate(out); err != nil {
 		t.Fatalf("built book failed validation: %v", err)
 	}
-	cb, err := loadBookFile(out)
+	cb, err := book.LoadFile(out)
 	if err != nil {
 		t.Fatalf("load built book: %v", err)
 	}
-	if len(cb.positions) == 0 {
+	key, _ := book.PositionKey([]book.Stone{{X: 4, Y: 4, Role: 1}}, 9)
+	if len(cb.PositionReplies(key)) == 0 {
 		t.Fatal("built book has no positions")
 	}
 	// the first position (single center stone) must resolve to a reply
-	stones := []bookStone{{4, 4, 1}}
-	if cands := cb.movesFor(stones); len(cands) == 0 {
+	stones := []book.Stone{{X: 4, Y: 4, Role: 1}}
+	if cands := cb.MovesFor(stones); len(cands) == 0 {
 		t.Fatal("built book does not cover the opening move's reply")
 	}
 }
@@ -108,7 +111,7 @@ func bookBuildForTest(out string, size, depth, ply, width int) {
 		budgetEnd: time.Now().Add(60 * time.Second),
 	}
 	b.walk(nil, nil)
-	src := bookSourceJSON{
+	src := book.Source{
 		ID:               "bango-built",
 		Name:             "test built book",
 		Source:           "self-search",

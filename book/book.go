@@ -1,4 +1,4 @@
-package main
+package book
 
 // Opening book: a Go port of the tutorial project's opening-book module
 // (gobang src/ai/opening-book), kept format-compatible so the same JSON
@@ -12,6 +12,10 @@ package main
 // reply for a position with a single stone falls back to the translated
 // first-reply generalization: every line's first→second move displacement
 // is applied at the actual stone position.
+//
+// This package is the book data module: pure loading/compiling/querying with
+// no search dependency, so the engine session (package main), the alphabeta
+// algorithm and the book CLI tooling can all share it.
 
 import (
 	"encoding/json"
@@ -22,51 +26,62 @@ import (
 	"strings"
 )
 
-// bookSourceJSON mirrors the gobang opening source format.
-type bookSourceJSON struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	Source           string            `json:"source"`
-	License          string            `json:"license"`
-	Rules            string            `json:"rules"`
-	Size             int               `json:"size"`
-	CoordinateSystem string            `json:"coordinateSystem"`
-	Openings         []bookOpeningJSON `json:"openings"`
+// Protocol rule codes, mirroring the INFO rule bitmask (see the alphabeta
+// package for the full set). Books for other rules are rejected outright.
+const (
+	RuleFreestyle = 0
+	RuleRenju     = 4
+)
+
+// Source mirrors the gobang opening source format (one JSON object; a file
+// may also hold an array of sources).
+type Source struct {
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	Source           string    `json:"source"`
+	License          string    `json:"license"`
+	Rules            string    `json:"rules"`
+	Size             int       `json:"size"`
+	CoordinateSystem string    `json:"coordinateSystem"`
+	Openings         []Opening `json:"openings"`
 }
 
-type bookOpeningJSON struct {
+// Opening is one numbered move line.
+type Opening struct {
 	ID          string  `json:"id"`
 	MinPrefix   int     `json:"minPrefixLength,omitempty"`
 	Coordinates [][]int `json:"coordinates"`
 }
 
-// bookStone is one stone with role encoded relative to black: +1 black, -1
+// Stone is one stone with role encoded relative to black: +1 black, -1
 // white. Encoding relative to the first mover makes the book usable no
-// matter which internal color (playerMe/playerOpp) black happens to be.
-type bookStone struct {
-	x, y int
-	role int
+// matter which internal color owns black.
+type Stone struct {
+	X, Y int
+	Role int
 }
 
-type bookCandidate struct {
-	move   int // board index y*size+x
-	weight int
+// Candidate is a book reply: a flat board index (y*size+x) and its weight.
+type Candidate struct {
+	Move   int
+	Weight int
 }
 
-// compiledBook is the query-ready book: canonical position key → candidate
-// move index → accumulated weight.
-type compiledBook struct {
-	rule         int
-	size         int
+// Compiled is the query-ready book: canonical position key → candidate move
+// index → accumulated weight.
+type Compiled struct {
+	Rule int
+	Size int
+
 	name         string
 	lines        int
 	positions    map[string]map[int]int
 	firstReplies [][2][2]int // per line: (first move, second move) for translation
 }
 
-// bookRuleCode maps the JSON "rules" field onto engine rule codes. Books for
+// RuleCode maps the JSON "rules" field onto engine rule codes. Books for
 // unmapped rules are rejected outright instead of guessed.
-func bookRuleCode(rules string) (int, bool) {
+func RuleCode(rules string) (int, bool) {
 	switch rules {
 	case "freestyle":
 		return RuleFreestyle, true
@@ -76,10 +91,10 @@ func bookRuleCode(rules string) (int, bool) {
 	return 0, false
 }
 
-// bookConverter returns the coordinate conversion for a source's declared
+// Converter returns the coordinate conversion for a source's declared
 // coordinate system. Note the 8-symmetry group contains the transpose, so a
 // consistent row/column interpretation is absorbed by canonicalization.
-func bookConverter(system string) (func(x, y, size int) (int, int), error) {
+func Converter(system string) (func(x, y, size int) (int, int), error) {
 	switch system {
 	case "", "board-row-column":
 		return func(x, y, size int) (int, int) { return x, y }, nil
@@ -92,9 +107,9 @@ func bookConverter(system string) (func(x, y, size int) (int, int), error) {
 	return nil, fmt.Errorf("unsupported coordinate system %q", system)
 }
 
-// transformPoint applies one of the 8 board symmetries (identity, three
+// TransformPoint applies one of the 8 board symmetries (identity, three
 // rotations, four mirrors) — identical numbering to the gobang original.
-func transformPoint(x, y, size, t int) (int, int) {
+func TransformPoint(x, y, size, t int) (int, int) {
 	last := size - 1
 	switch t {
 	case 1:
@@ -118,16 +133,16 @@ func transformPoint(x, y, size, t int) (int, int) {
 
 var bookInverseTransforms = [8]int{0, 3, 2, 1, 4, 5, 6, 7}
 
-// bookPositionKey canonicalizes a stone set: among the 8 symmetries the
+// PositionKey canonicalizes a stone set: among the 8 symmetries the
 // lexicographically smallest encoding wins; the returned transform list
 // holds every symmetry achieving it (the position's automorphism group).
-func bookPositionKey(stones []bookStone, size int) (key string, transforms []int) {
+func PositionKey(stones []Stone, size int) (key string, transforms []int) {
 	best := ""
 	for t := 0; t < 8; t++ {
 		parts := make([]string, 0, len(stones))
 		for _, st := range stones {
-			tx, ty := transformPoint(st.x, st.y, size, t)
-			parts = append(parts, fmt.Sprintf("%d,%d,%d", tx, ty, st.role))
+			tx, ty := TransformPoint(st.X, st.Y, size, t)
+			parts = append(parts, fmt.Sprintf("%d,%d,%d", tx, ty, st.Role))
 		}
 		sort.Strings(parts)
 		k := fmt.Sprintf("%d|%s", size, strings.Join(parts, ";"))
@@ -141,24 +156,24 @@ func bookPositionKey(stones []bookStone, size int) (key string, transforms []int
 	return best, transforms
 }
 
-// compileBook expands every opening line at every prefix length (from
+// compile expands every opening line at every prefix length (from
 // minPrefixLength) into candidate entries, distributing weight across the
 // position's automorphic move variants.
-func compileBook(src *bookSourceJSON) (*compiledBook, error) {
+func compile(src *Source) (*Compiled, error) {
 	if src.Size < 5 {
 		return nil, fmt.Errorf("book %q: unsupported size %d", src.ID, src.Size)
 	}
-	rule, ok := bookRuleCode(src.Rules)
+	rule, ok := RuleCode(src.Rules)
 	if !ok {
 		return nil, fmt.Errorf("book %q: unsupported rules %q", src.ID, src.Rules)
 	}
-	conv, err := bookConverter(src.CoordinateSystem)
+	conv, err := Converter(src.CoordinateSystem)
 	if err != nil {
 		return nil, fmt.Errorf("book %q: %v", src.ID, err)
 	}
-	cb := &compiledBook{
-		rule:      rule,
-		size:      src.Size,
+	cb := &Compiled{
+		Rule:      rule,
+		Size:      src.Size,
 		name:      src.Name,
 		positions: make(map[string]map[int]int),
 	}
@@ -170,7 +185,7 @@ func compileBook(src *bookSourceJSON) (*compiledBook, error) {
 		if minPrefix < 1 {
 			minPrefix = 1
 		}
-		moves := make([]bookStone, 0, len(op.Coordinates))
+		moves := make([]Stone, 0, len(op.Coordinates))
 		for _, c := range op.Coordinates {
 			if len(c) != 2 {
 				return nil, fmt.Errorf("book %q opening %q: bad coordinate %v", src.ID, op.ID, c)
@@ -179,18 +194,18 @@ func compileBook(src *bookSourceJSON) (*compiledBook, error) {
 			if x < 0 || y < 0 || x >= src.Size || y >= src.Size {
 				return nil, fmt.Errorf("book %q opening %q: out-of-range coordinate %v", src.ID, op.ID, c)
 			}
-			moves = append(moves, bookStone{x, y, 1})
+			moves = append(moves, Stone{X: x, Y: y, Role: 1})
 			if len(moves)%2 == 0 {
-				moves[len(moves)-1].role = -1
+				moves[len(moves)-1].Role = -1
 			}
 		}
 		cb.lines++
 		if minPrefix <= 1 {
 			cb.firstReplies = append(cb.firstReplies,
-				[2][2]int{{moves[0].x, moves[0].y}, {moves[1].x, moves[1].y}})
+				[2][2]int{{moves[0].X, moves[0].Y}, {moves[1].X, moves[1].Y}})
 		}
 		for pl := minPrefix; pl < len(moves); pl++ {
-			key, transforms := bookPositionKey(moves[:pl], src.Size)
+			key, transforms := PositionKey(moves[:pl], src.Size)
 			weights := cb.positions[key]
 			if weights == nil {
 				weights = make(map[int]int)
@@ -198,7 +213,7 @@ func compileBook(src *bookSourceJSON) (*compiledBook, error) {
 			}
 			mv := moves[pl]
 			for _, t := range transforms {
-				tx, ty := transformPoint(mv.x, mv.y, src.Size, t)
+				tx, ty := TransformPoint(mv.X, mv.Y, src.Size, t)
 				weights[tx*src.Size+ty]++
 			}
 		}
@@ -210,10 +225,10 @@ func compileBook(src *bookSourceJSON) (*compiledBook, error) {
 }
 
 // merge folds another compiled book of the same rule/size into cb.
-func (cb *compiledBook) merge(other *compiledBook) error {
-	if other.rule != cb.rule || other.size != cb.size {
+func (cb *Compiled) merge(other *Compiled) error {
+	if other.Rule != cb.Rule || other.Size != cb.Size {
 		return fmt.Errorf("cannot merge book %q (rule %d size %d) into %q (rule %d size %d)",
-			other.name, other.rule, other.size, cb.name, cb.rule, cb.size)
+			other.name, other.Rule, other.Size, cb.name, cb.Rule, cb.Size)
 	}
 	for key, weights := range other.positions {
 		dst := cb.positions[key]
@@ -230,75 +245,89 @@ func (cb *compiledBook) merge(other *compiledBook) error {
 	return nil
 }
 
-// movesFor returns the book candidates for a position, inverse-transformed
+// PositionReplies returns the raw reply-weight map (move index → weight,
+// canonical x-major indices) for an exact canonical position key, e.g. one
+// produced by PositionKey. Callers that need query-frame candidates should
+// prefer MovesFor.
+func (cb *Compiled) PositionReplies(key string) map[int]int {
+	return cb.positions[key]
+}
+
+// InverseTransform applies the inverse of the symmetry t: mapping a point
+// transformed with t back to its original coordinates.
+func InverseTransform(x, y, size, t int) (int, int) {
+	return TransformPoint(x, y, size, bookInverseTransforms[t])
+}
+
+// MovesFor returns the book candidates for a position, inverse-transformed
 // into the query's coordinate frame and sorted by weight (best first).
-func (cb *compiledBook) movesFor(stones []bookStone) []bookCandidate {
-	key, transforms := bookPositionKey(stones, cb.size)
+func (cb *Compiled) MovesFor(stones []Stone) []Candidate {
+	key, transforms := PositionKey(stones, cb.Size)
 	weights := cb.positions[key]
 	if len(weights) == 0 {
 		return nil
 	}
 	inv := bookInverseTransforms[transforms[0]]
-	out := make([]bookCandidate, 0, len(weights))
+	out := make([]Candidate, 0, len(weights))
 	for mk, w := range weights {
-		x, y := mk/cb.size, mk%cb.size
-		tx, ty := transformPoint(x, y, cb.size, inv)
-		out = append(out, bookCandidate{move: ty*cb.size + tx, weight: w})
+		x, y := mk/cb.Size, mk%cb.Size
+		tx, ty := TransformPoint(x, y, cb.Size, inv)
+		out = append(out, Candidate{Move: ty*cb.Size + tx, Weight: w})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].weight != out[j].weight {
-			return out[i].weight > out[j].weight
+		if out[i].Weight != out[j].Weight {
+			return out[i].Weight > out[j].Weight
 		}
-		return out[i].move < out[j].move
+		return out[i].Move < out[j].Move
 	})
 	return out
 }
 
-// translatedFirstMoves applies every line's first→second move displacement
+// TranslatedFirstMoves applies every line's first→second move displacement
 // at the actual first stone (the query position holds exactly one stone that
 // is not itself covered by the book).
-func (cb *compiledBook) translatedFirstMoves(ax, ay int) []bookCandidate {
+func (cb *Compiled) TranslatedFirstMoves(ax, ay int) []Candidate {
 	weights := make(map[int]int)
 	for _, pr := range cb.firstReplies {
 		for t := 0; t < 8; t++ {
-			fx, fy := transformPoint(pr[0][0], pr[0][1], cb.size, t)
-			sx, sy := transformPoint(pr[1][0], pr[1][1], cb.size, t)
+			fx, fy := TransformPoint(pr[0][0], pr[0][1], cb.Size, t)
+			sx, sy := TransformPoint(pr[1][0], pr[1][1], cb.Size, t)
 			mx, my := ax+sx-fx, ay+sy-fy
-			if mx < 0 || my < 0 || mx >= cb.size || my >= cb.size {
+			if mx < 0 || my < 0 || mx >= cb.Size || my >= cb.Size {
 				continue
 			}
-			weights[mx*cb.size+my]++
+			weights[mx*cb.Size+my]++
 		}
 	}
-	out := make([]bookCandidate, 0, len(weights))
+	out := make([]Candidate, 0, len(weights))
 	for mk, w := range weights {
-		out = append(out, bookCandidate{move: mk, weight: w})
+		out = append(out, Candidate{Move: mk, Weight: w})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].weight != out[j].weight {
-			return out[i].weight > out[j].weight
+		if out[i].Weight != out[j].Weight {
+			return out[i].Weight > out[j].Weight
 		}
-		return out[i].move < out[j].move
+		return out[i].Move < out[j].Move
 	})
 	return out
 }
 
-// loadBookFile reads a book file: either a single source object or an array
-// of sources (merged; rule and size must agree across entries).
-func loadBookFile(path string) (*compiledBook, error) {
+// LoadFile reads a book file: either a single source object or an array of
+// sources (merged; rule and size must agree across entries).
+func LoadFile(path string) (*Compiled, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var single bookSourceJSON
+	var single Source
 	if err := json.Unmarshal(data, &single); err == nil && single.Size > 0 {
-		return compileBook(&single)
+		return compile(&single)
 	}
-	var many []bookSourceJSON
+	var many []Source
 	if err := json.Unmarshal(data, &many); err == nil && len(many) > 0 {
-		var merged *compiledBook
+		var merged *Compiled
 		for i := range many {
-			cb, err := compileBook(&many[i])
+			cb, err := compile(&many[i])
 			if err != nil {
 				return nil, err
 			}
@@ -320,25 +349,25 @@ func loadBookFile(path string) (*compiledBook, error) {
 // openings (tournament-grade lines — safe to adopt outright).
 const defaultBookFile = "gomocup-2026-15x15.json"
 
-// modeBookFile is the classic 26-mode guidance book (opening.go): engine-
-// grown continuations feed the opening prior's theory zone only.
+// modeBookFile is the classic 26-mode guidance book (opening theory zone):
+// engine-grown continuations feed the opening prior only.
 const modeBookFile = "classic-26-15x15.json"
 
-// loadModeBook compiles the classic mode guidance book; nil when missing or
+// LoadModeBook compiles the classic mode guidance book; nil when missing or
 // incompatible.
-func loadModeBook() *compiledBook {
-	for _, path := range findDefaultBookPaths([]string{modeBookFile}) {
-		if cb, err := loadBookFile(path); err == nil {
+func LoadModeBook() *Compiled {
+	for _, path := range FindDefaultBookPaths([]string{modeBookFile}) {
+		if cb, err := LoadFile(path); err == nil {
 			return cb
 		}
 	}
 	return nil
 }
 
-// findBookPath locates a manager/legacy single-book file: the protocol
+// FindBookPath locates a manager/legacy single-book file: the protocol
 // INFO folder's pbrain-bango/book.json first, then the executable's own
 // directory. Empty when neither exists (the shipped openbook defaults apply).
-func findBookPath(folder string) string {
+func FindBookPath(folder string) string {
 	var candidates []string
 	if folder != "" {
 		candidates = append(candidates, filepath.Join(folder, "pbrain-bango", "book.json"))
@@ -354,10 +383,11 @@ func findBookPath(folder string) string {
 	return ""
 }
 
-// findDefaultBookPaths returns the shipped openbook files (from names) that
-// exist: executable-directory copies first, then working-directory copies
-// (covers `go run .`, whose executable lives in a temp dir).
-func findDefaultBookPaths(names []string) []string {
+// FindDefaultBookPaths returns the shipped openbook files (from names) that
+// exist: executable-directory copies first, then the working directory and
+// its ancestors (covers `go run .`, whose executable lives in a temp dir,
+// and tests running from nested package directories).
+func FindDefaultBookPaths(names []string) []string {
 	var candidates []string
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
@@ -366,8 +396,16 @@ func findDefaultBookPaths(names []string) []string {
 		}
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		for _, f := range names {
-			candidates = append(candidates, filepath.Join(cwd, "openbook", f))
+		dir := cwd
+		for level := 0; level < 6; level++ {
+			for _, f := range names {
+				candidates = append(candidates, filepath.Join(dir, "openbook", f))
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
 		}
 	}
 	seen := make(map[string]bool)
@@ -384,13 +422,13 @@ func findDefaultBookPaths(names []string) []string {
 	return out
 }
 
-// loadDefaultBooks compiles and merges the shipped openbook defaults; a file
+// LoadDefaultBooks compiles and merges the shipped openbook defaults; a file
 // whose rule or size is incompatible is skipped silently (the whole-book
 // disable on mismatch, matching the single-file behaviour).
-func loadDefaultBooks() *compiledBook {
-	var merged *compiledBook
-	for _, path := range findDefaultBookPaths([]string{defaultBookFile}) {
-		cb, err := loadBookFile(path)
+func LoadDefaultBooks() *Compiled {
+	var merged *Compiled
+	for _, path := range FindDefaultBookPaths([]string{defaultBookFile}) {
+		cb, err := LoadFile(path)
 		if err != nil {
 			continue
 		}
