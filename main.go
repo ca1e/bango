@@ -267,7 +267,8 @@ func (e *Engine) thinkLoop(cmdChan <-chan Command) {
 			e.resetBoard(e.size)
 			e.writeLine("OK")
 		case "ABOUT":
-			e.writeLine(`name="pbrain-bango", version="0.1", author="cale && GLM5.3", ai="negamax+alphabeta+vcx"`)
+			// ai field reports the algorithm actually selected via BANGO_ALGO
+			e.writeLine(fmt.Sprintf(`name="pbrain-bango", version="0.1", author="cale && GLM5.3", ai=%q`, e.algo.Name()))
 		case "PRINT":
 			e.cmdPrint()
 		case "TAKEBACK":

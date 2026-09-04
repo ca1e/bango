@@ -20,7 +20,7 @@ func TestKillSearchFindsVCF(t *testing.T) {
 ...o.o...
 ....x....
 `)
-	r := s.runKillSearch(2 * time.Second)
+	r := s.runKillSearch(time.Now().Add(2 * time.Second))
 	if r < 0 {
 		t.Fatal("kill search missed a double-three forced win")
 	}
@@ -45,7 +45,7 @@ func TestKillSearchSimpleFourWin(t *testing.T) {
 ..xx.....
 .........
 `)
-	r := s.runKillSearch(2 * time.Second)
+	r := s.runKillSearch(time.Now().Add(2 * time.Second))
 	if r < 0 {
 		t.Fatal("kill search missed a trivial four completion")
 	}
@@ -75,7 +75,7 @@ func TestKillSearchVCTOpenThree(t *testing.T) {
 ...ooo...
 .........
 `)
-	r := s.runKillSearch(3 * time.Second)
+	r := s.runKillSearch(time.Now().Add(3 * time.Second))
 	if r < 0 {
 		t.Fatal("kill search missed a forced win from an open three")
 	}
@@ -100,7 +100,7 @@ func TestKillSearchNoFalsePositive(t *testing.T) {
 .........
 .........
 `)
-	if r := s.runKillSearch(time.Second); r >= 0 {
+	if r := s.runKillSearch(time.Now().Add(time.Second)); r >= 0 {
 		t.Fatalf("kill search reported a fake kill at (%d,%d)", r%9, r/9)
 	}
 }
@@ -119,7 +119,7 @@ func TestKillSearchDefendedByCounterFour(t *testing.T) {
 .........
 .........
 `)
-	if r := s.runKillSearch(time.Second); r >= 0 {
+	if r := s.runKillSearch(time.Now().Add(time.Second)); r >= 0 {
 		t.Fatalf("kill reported despite defender's four: (%d,%d)", r%9, r/9)
 	}
 }
@@ -140,7 +140,7 @@ func TestKillSearchRushFourNotAKill(t *testing.T) {
 .........
 .........
 `)
-	if r := s.runKillSearch(2 * time.Second); r >= 0 {
+	if r := s.runKillSearch(time.Now().Add(2 * time.Second)); r >= 0 {
 		t.Fatalf("blockable rush four reported as a kill at (%d,%d)", r%9, r/9)
 	}
 }
@@ -162,7 +162,7 @@ func TestKillSearchVCFThroughForcedBlock(t *testing.T) {
 .........
 .........
 `)
-	r := s.runKillSearch(2 * time.Second)
+	r := s.runKillSearch(time.Now().Add(2 * time.Second))
 	if r < 0 {
 		t.Fatal("kill search lost the forced-block VCF chain")
 	}
@@ -192,7 +192,7 @@ func TestKillSearchLiveTwoNotAKill(t *testing.T) {
 .........
 .........
 `)
-	if r := s.runKillSearch(2 * time.Second); r >= 0 {
+	if r := s.runKillSearch(time.Now().Add(2 * time.Second)); r >= 0 {
 		t.Fatalf("blockable live two reported as a kill at (%d,%d)", r%9, r/9)
 	}
 }
@@ -213,7 +213,7 @@ func TestKillSearchFreshThreeDefended(t *testing.T) {
 .........
 .........
 `)
-	if r := s.runKillSearch(2 * time.Second); r >= 0 {
+	if r := s.runKillSearch(time.Now().Add(2 * time.Second)); r >= 0 {
 		t.Fatalf("blockable fresh threes reported as a kill at (%d,%d)", r%9, r/9)
 	}
 }
@@ -238,7 +238,7 @@ func TestKillSearchVCTPerfSanity(t *testing.T) {
 .........
 `)
 	start := time.Now()
-	r := s.runKillSearch(2 * time.Second)
+	r := s.runKillSearch(time.Now().Add(2 * time.Second))
 	elapsed := time.Since(start)
 	t.Logf("kill search on mixed-threat board: move=%d, elapsed=%v", r, elapsed)
 	// generous ceiling: a quarter-budget probe on a dense 9x9 board must
@@ -264,7 +264,7 @@ func TestOppKillProbeBlocksOpponentKill(t *testing.T) {
 ...o.....
 .........
 `)
-	r := s.runOppKillProbe(2 * time.Second)
+	r := s.runOppKillProbe(time.Now().Add(2 * time.Second))
 	if r < 0 {
 		t.Fatal("defence probe missed the opponent's live-three kill")
 	}
@@ -289,7 +289,7 @@ func TestOppKillProbeLiveTwoNotAKill(t *testing.T) {
 .........
 .........
 `)
-	if r := s.runOppKillProbe(2 * time.Second); r >= 0 {
+	if r := s.runOppKillProbe(time.Now().Add(2 * time.Second)); r >= 0 {
 		t.Fatalf("blockable opponent live two reported as a kill at (%d,%d)", r%9, r/9)
 	}
 }
@@ -310,7 +310,7 @@ func TestOppKillProbeRejectsUnblockableFork(t *testing.T) {
 .....xxx.
 .........
 `)
-	if r := s.runOppKillProbe(2 * time.Second); r >= 0 {
+	if r := s.runOppKillProbe(time.Now().Add(2 * time.Second)); r >= 0 {
 		t.Fatalf("unblockable double three reported as a single-point defence at (%d,%d)", r%9, r/9)
 	}
 }

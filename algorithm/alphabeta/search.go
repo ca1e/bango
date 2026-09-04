@@ -508,16 +508,27 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 	// probe VCF/VCT for a deep forcing sequence the narrow search missed.
 	// A win the main search itself proved is kept as-is — the kill search's
 	// narrower forcing-only proof must never override it with an unproven
-	// alternative.
+	// alternative. Both probes share the move's ONE absolute deadline: the
+	// ladder already spent its share, so the kills get whatever remains and
+	// can never push the move past the budget (the old per-stage fractions
+	// "now + budget/4" stacked on top and let a move run unbounded).
 	if prevScore < winScore-64 {
-		if r := s.runKillSearch(budget); r >= 0 {
+		if r := s.runKillSearch(s.deadline); r >= 0 {
 			return r % n, r / n
 		}
 		// opponent kill probe (reference candidateMinmax net): a proven
 		// opponent forcing win outranks the search's quiet choice — occupy
-		// its principal threat point when the block verifiably holds
-		if r := s.runOppKillProbe(budget); r >= 0 {
-			return r % n, r / n
+		// its principal threat point when the block verifiably holds.
+		// Gate: only when the ladder itself reads danger (prevScore < 0).
+		// A completed-depth ladder that still likes the position outvoted
+		// the probe empirically — on quiet boards the narrow forcing-only
+		// proof fires on phantom kills and its block is a passive losing
+		// move (the tengen main line, 2026-09: probe block (8,6) won black
+		// 14% of its games, the ladder's (6,5) 93%; kept the ladder instead).
+		if prevScore < 0 {
+			if r := s.runOppKillProbe(s.deadline); r >= 0 {
+				return r % n, r / n
+			}
 		}
 	}
 	return best % n, best / n

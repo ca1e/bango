@@ -3,7 +3,10 @@
 // openings, colours alternated, fixed per-move budget) as one reproducible
 // command:
 //
-//	go run ./cmd/arena ./engineA ./engineB -games 50 -time-turn 400
+//	go run ./cmd/arena -games 50 -time-turn 400 ./engineA ./engineB
+//
+// (flags must precede the engine paths — Go's flag package stops parsing at
+// the first positional argument)
 //
 // Each game runs fresh engine processes on pipes. The harness validates
 // legality (in-board, empty cell), five-in-a-row per the chosen rule, board

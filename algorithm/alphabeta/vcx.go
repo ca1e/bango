@@ -13,12 +13,26 @@ package alphabeta
 // tutorial, VCF (fours only) is tried first, then VCT (fours + live threes).
 // The engine runs it after iterative deepening found no forced win; a found
 // sequence is returned as the move and folded into the search score.
+//
+// Time: the probe shares the move's one absolute deadline (runSingle sets it
+// from the per-move budget). Once it fires, ks.timedOut latches and every
+// caller unwinds immediately; a timed-out proof is *inconclusive* — runKill
+// Search reports no kill and runOppKillProbe never claims a defence from one.
 
 import "time"
 
 const (
 	vcfDepth = 12 // plies for the fours-only kill search
 	vctDepth = 10 // pliers for the threes-and-fours kill search
+
+	// probeBlockLimit caps how many defence candidates runOppKillProbe may
+	// verify; the deadline bounds the total either way.
+	probeBlockLimit = 6
+
+	// unlimitedMoves: the defence layer's forcing-move list is never
+	// truncated — a working defence cut off by a cap would fake a kill.
+	// Only the attack layer accepts that incompleteness.
+	unlimitedMoves = 1 << 20
 )
 
 // killSearch holds the state of one VCF/VCT probe. It reuses the searcher's
@@ -29,6 +43,7 @@ type killSearch struct {
 	attacker int  // the side being proven (playerMe at the root)
 	deadline time.Time
 	nodes    int
+	timedOut bool // latched once the deadline fires; unwinds the whole proof
 }
 
 // vcxResult describes a proven kill: the first move to play and its ply depth.
@@ -38,21 +53,22 @@ type vcxResult struct {
 }
 
 // runKillSearch probes VCF then VCT after the main search. Returns the first
-// move of a proven kill, or -1.
-func (s *searcher) runKillSearch(budget time.Duration) int {
+// move of a proven kill, or -1. A proof cut short by the deadline is
+// inconclusive and reports no kill.
+func (s *searcher) runKillSearch(deadline time.Time) int {
 	if s.stoneCount() == 0 {
 		return -1
 	}
-	deadline := time.Time{}
-	if budget > 0 {
-		deadline = time.Now().Add(budget / 4) // kills get a quarter of the move budget
-	}
 	ks := &killSearch{s: s, deadline: deadline, attacker: playerMe}
 
-	// VCF first (tutorial: 优先 VCF), then VCT
+	// VCF first (tutorial: 优先 VCF), then VCT — both under the one absolute
+	// deadline, so a VCF timeout leaves nothing for VCT either
 	ks.onlyFour = true
 	if r := ks.search(playerMe, vcfDepth); r != nil {
 		return r.move
+	}
+	if ks.timedOut {
+		return -1
 	}
 	ks.onlyFour = false
 	if r := ks.search(playerMe, vctDepth); r != nil {
@@ -65,54 +81,87 @@ func (s *searcher) runKillSearch(budget time.Duration) int {
 // implementation's candidateMinmax net): it proves whether the OPPONENT —
 // given the move the engine is about to spend elsewhere — could force a win
 // with forcing moves alone. A proven opponent kill outranks the main search's
-// quiet choice: the probe returns the kill's principal threat point, but only
-// after occupying it verifiably dissolves the proof (otherwise the threat is
-// a multi-point fork the block cannot answer, and the main search's move
-// stands). Returns -1 when the opponent has no verifiable kill.
-func (s *searcher) runOppKillProbe(budget time.Duration) int {
+// quiet choice — but only once an actual defence is found: the probe tries
+// the mandatory answering points (the kill's own first move plus the defender's
+// blocks of fives and live-three growth points) and returns the first cell
+// whose occupation verifiably dissolves the proof. A fork no single cell can
+// answer — and equally a proof or a verification cut short by the deadline —
+// returns -1 and the main search's move stands.
+func (s *searcher) runOppKillProbe(deadline time.Time) int {
 	if s.stoneCount() == 0 {
 		return -1
 	}
-	deadline := time.Time{}
-	if budget > 0 {
-		deadline = time.Now().Add(budget / 8) // defence gets a smaller slice
-	}
 	ks := &killSearch{s: s, deadline: deadline, attacker: playerOpp}
 	r := ks.search(playerOpp, vctDepth)
-	if r == nil {
-		return -1
+	if ks.timedOut || r == nil {
+		return -1 // no proven kill, or inconclusive: keep the quiet move
 	}
-	t := r.move
-	if s.rule == RuleRenju && playerMe == s.blackSide && s.isForbidden(t, playerMe) {
-		return -1 // the block point is illegal for the engine: no defence here
+	cands := append([]int(nil), r.move)
+	for _, m := range ks.forcingMoves(playerMe, unlimitedMoves) {
+		if m.key == scoreFive-1 || m.key == scoreRushFour-1 {
+			cands = append(cands, m.p)
+		}
 	}
-	s.makeMove(t, playerMe)
-	verified := ks.search(playerOpp, vctDepth) == nil
-	s.undoMove(t, playerMe)
-	if !verified {
-		return -1
+	seen := make(map[int]bool, len(cands))
+	tried := 0
+	for _, c := range cands {
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		if tried >= probeBlockLimit {
+			break
+		}
+		if s.rule == RuleRenju && playerMe == s.blackSide && s.isForbidden(c, playerMe) {
+			continue // the block point is illegal for the engine: no defence here
+		}
+		tried++
+		s.makeMove(c, playerMe)
+		r2 := ks.search(playerOpp, vctDepth)
+		s.undoMove(c, playerMe)
+		if ks.timedOut {
+			return -1 // inconclusive verification is never a verified defence
+		}
+		if r2 == nil {
+			return c
+		}
 	}
-	return t
+	return -1
+}
+
+// passDeadline reports whether the proof may continue. Checked on every node:
+// node costs here are microseconds, so the clock read is noise, and latching
+// timedOut lets every caller unwind without waiting for the next check.
+func (ks *killSearch) passDeadline() bool {
+	if ks.timedOut {
+		return true
+	}
+	if !ks.deadline.IsZero() && time.Now().After(ks.deadline) {
+		ks.timedOut = true
+		return true
+	}
+	return false
 }
 
 // search proves whether the attacker (always playerMe at the root; roles
 // alternate by parameter) can force a win within deep plies using only
-// forcing moves. Returns the kill sequence's first move, or nil.
+// forcing moves. Returns the kill sequence's first move, or nil — nil means
+// "unproven or timed out"; callers consulting ks.timedOut tell the two apart.
 func (ks *killSearch) search(attacker, deep int) *vcxResult {
 	ks.nodes++
 	if deep <= 0 {
 		return nil
 	}
-	if !ks.deadline.IsZero() && ks.nodes%256 == 0 && time.Now().After(ks.deadline) {
-		return nil // out of time: unproven, not refuted
+	if ks.passDeadline() {
+		return nil
 	}
 
-	moves := ks.forcingMoves(attacker)
+	moves := ks.forcingMoves(attacker, nodeMoveLimit)
 	if len(moves) == 0 {
 		return nil
 	}
 	// a five point ends the proof immediately
-	if len(moves) > 0 && ks.s.winsMove(moves[0].p, attacker) {
+	if ks.s.winsMove(moves[0].p, attacker) {
 		return &vcxResult{move: moves[0].p, ply: 1}
 	}
 
@@ -126,6 +175,9 @@ func (ks *killSearch) search(attacker, deep int) *vcxResult {
 			r = &vcxResult{move: m.p, ply: 2}
 		}
 		ks.s.undoMove(m.p, attacker)
+		if ks.timedOut {
+			return nil // a proof finished before the timeout is returned above
+		}
 		if r != nil {
 			return r
 		}
@@ -134,17 +186,19 @@ func (ks *killSearch) search(attacker, deep int) *vcxResult {
 }
 
 // defends reports whether the defender can survive the attacker's threats.
-// One working defence is enough (tutorial MIN-layer rule).
+// One working defence is enough (tutorial MIN-layer rule). A timeout reads as
+// "defended" — conservative for the proof itself — and latches ks.timedOut so
+// no caller mistakes the inconclusive result for a real refutation.
 func (ks *killSearch) defends(defender, deep int) bool {
 	ks.nodes++
 	if deep <= 0 {
 		return true // out of horizon: assume defence holds (no false kills)
 	}
-	if !ks.deadline.IsZero() && ks.nodes%256 == 0 && time.Now().After(ks.deadline) {
+	if ks.passDeadline() {
 		return true
 	}
 
-	moves := ks.forcingMoves(defender)
+	moves := ks.forcingMoves(defender, unlimitedMoves)
 	if len(moves) == 0 {
 		return false // nothing to do: the attack continues unchecked
 	}
@@ -157,6 +211,9 @@ func (ks *killSearch) defends(defender, deep int) bool {
 			survived = ks.search(3-defender, deep-1) == nil
 		}
 		ks.s.undoMove(m.p, defender)
+		if ks.timedOut {
+			return true
+		}
 		if survived {
 			return true
 		}
@@ -175,7 +232,10 @@ type threatMove struct {
 // plus live threes for the attacker in VCT mode. Blocks carry a key just
 // below an own five: when both a five and a block exist, the win is tried
 // first; on defence, covering the pending four comes before counter-attacks.
-func (ks *killSearch) forcingMoves(side int) []threatMove {
+// The attack layer's list is truncated to limit (completeness there only
+// costs missed kills); pass unlimitedMoves on defence — truncating the
+// defenders' answers would fake a kill.
+func (ks *killSearch) forcingMoves(side, limit int) []threatMove {
 	s := ks.s
 	n := s.n
 	var out []threatMove
@@ -231,8 +291,8 @@ func (ks *killSearch) forcingMoves(side int) []threatMove {
 			out[j], out[j-1] = out[j-1], out[j]
 		}
 	}
-	if len(out) > nodeMoveLimit {
-		out = out[:nodeMoveLimit]
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out
 }

@@ -9,7 +9,10 @@ package random
 // Decision pipeline (Think):
 //
 //  1. Empty board → the tengen (天元, the board center).
-//  2. Kill-move judgment (杀局判断), all of it keyed to the previous move's
+//  2. Win-now scan (两层搜索·第一层): if the engine's own side already holds
+//     a four — straight, rush or jump — its completion point makes five this
+//     very move and outranks every defense (自己冲四最高优先级).
+//  3. Kill-move judgment (杀局判断), all of it keyed to the previous move's
 //     stone L and its side:
 //     a. Five threats (跳连/冲四的成五点): slide a 5-cell window along each
 //     of the 4 directions through L; a window holding 4 same-side stones
@@ -21,7 +24,14 @@ package random
 //     is 3 or 4 long with both flanking cells empty — block one of the two
 //     ends, chosen at random, again proximity-weighted ("两个方向随机选
 //     择，以距离前一手落子最近为优先").
-//  3. Otherwise the move pool is every empty intersection within Chebyshev
+//     c. Jump open three (跳活三, .xx.x. / .x.xx.): 3 same-side stones with
+//     one internal gap inside a 6-cell window whose two outer cells are both
+//     empty. openRunBlock cannot see it (the run is not contiguous), yet
+//     filling the gap turns it into a live four — so the gap is taken now,
+//     answering the jump threat one escalation stage earlier than the
+//     jump-four defense in (a) (两层搜索·第二层，比跳四优先级更高：拦在
+//     升级成跳四之前).
+//  4. Otherwise the move pool is every empty intersection within Chebyshev
 //     distance < 3 of any stone on the board; only the cells at the minimum
 //     Chebyshev distance from the previous move stay in play, and the draw
 //     runs among them — weighted-random only when several share the minimum.
@@ -93,6 +103,12 @@ func (a *Algorithm) Think(req algorithm.Request) (int, int) {
 		return n / 2, n / 2 // empty board: the tengen 天元
 	}
 
+	// 两层搜索·第一层 — an own four is completed for the immediate win
+	// before any defense is considered (自己冲四最高优先级)
+	if p, ok := ownFivePoint(b, n); ok {
+		return p % n, p / n
+	}
+
 	// last-move anchor for threat analysis and proximity weighting
 	last := -1
 	if req.HasLast {
@@ -107,6 +123,11 @@ func (a *Algorithm) Think(req algorithm.Request) (int, int) {
 			return p % n, p / n
 		}
 		if p, ok := a.openRunBlock(b, n, last); ok {
+			return p % n, p / n
+		}
+		// 两层搜索·第二层 — take the jump open three's gap while it is
+		// still a three (比跳四优先级更高：拦在升级成跳四之前)
+		if p, ok := a.jumpLiveThree(b, n, last); ok {
 			return p % n, p / n
 		}
 	}
@@ -135,6 +156,38 @@ func (a *Algorithm) Think(req algorithm.Request) (int, int) {
 	}
 	pick := a.weightedPick(nearestToLast(cands, stones, n, last), func(p int) int { return proximityWeight(p, last, n) })
 	return pick % n, pick / n
+}
+
+// ownFivePoint is the first search layer: when the engine's own side (board
+// id 1) already holds a four, its completion point wins on the spot and
+// outranks every defense (自己冲四最高优先级). Each empty cell is scored as
+// "place here, count the contiguous own run through it" over the 4
+// directions, which covers every four shape — straight, rush and jump — in
+// one pass; the first completion point found is played (any one wins).
+func ownFivePoint(b []int, n int) (int, bool) {
+	const me = 1
+	for p, v := range b {
+		if v != 0 {
+			continue
+		}
+		x, y := p%n, p/n
+		for d := 0; d < 4; d++ {
+			run := 1
+			for s := -1; s <= 1; s += 2 {
+				for i := 1; ; i++ {
+					cx, cy := x+dirX[d]*i*s, y+dirY[d]*i*s
+					if cx < 0 || cy < 0 || cx >= n || cy >= n || b[cy*n+cx] != me {
+						break
+					}
+					run++
+				}
+			}
+			if run >= 5 {
+				return p, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // chebyshev is |x1-x2| ⊔ |y1-y2|, the board distance used throughout.
@@ -289,6 +342,64 @@ func (a *Algorithm) openRunBlock(b []int, n, last int) (int, bool) {
 		return 0, false
 	}
 	pick := a.weightedPick(ends, func(p int) int { return proximityWeight(p, last, n) })
+	return pick, true
+}
+
+// jumpLiveThree is the second search layer: the jump open three (跳活三)
+// through the last move's stone — 3 same-side stones with one internal gap
+// in a 6-cell window whose two outer cells are both empty (.xx.x. / .x.xx.).
+// openRunBlock cannot see it (the stones are not contiguous), yet filling
+// the gap turns it into a live four, so the gap is taken now — the jump
+// threat is answered one escalation stage earlier than the jump-four defense
+// in fiveThreat (比跳四优先级更高：拦在升级成跳四之前). A flank-blocked
+// window (眠跳三) does not qualify: it only ever becomes a blockable rush
+// four, which fiveThreat already handles.
+func (a *Algorithm) jumpLiveThree(b []int, n, last int) (int, bool) {
+	side := b[last]
+	lx, ly := last%n, last/n
+
+	line := make([]int, 6)
+	var gaps []int
+	for d := 0; d < 4; d++ {
+		dx, dy := dirX[d], dirY[d]
+		// s is the line offset of the window's first cell; the 6-cell window
+		// spans s..s+5 and must hold L as an interior stone (s in -4..-1)
+		for s := -4; s <= -1; s++ {
+			onBoard := true
+			for i := 0; i < 6; i++ {
+				x, y := lx+(s+i)*dx, ly+(s+i)*dy
+				if x < 0 || y < 0 || x >= n || y >= n {
+					onBoard = false
+					break
+				}
+				line[i] = b[y*n+x]
+			}
+			// 活 requires both outer cells empty on the board; a side stone
+			// among the inner cells (opponent or field-3 mark) kills the shape
+			if !onBoard || line[0] != 0 || line[5] != 0 {
+				continue
+			}
+			stones, gapIdx, blocked := 0, -1, false
+			for i := 1; i <= 4; i++ {
+				switch {
+				case line[i] == side:
+					stones++
+				case line[i] == 0:
+					gapIdx = i
+				default:
+					blocked = true
+				}
+			}
+			if !blocked && stones == 3 && gapIdx >= 0 {
+				x, y := lx+(s+gapIdx)*dx, ly+(s+gapIdx)*dy
+				gaps = append(gaps, y*n+x)
+			}
+		}
+	}
+	if len(gaps) == 0 {
+		return 0, false
+	}
+	pick := a.weightedPick(dedupe(gaps), func(p int) int { return proximityWeight(p, last, n) })
 	return pick, true
 }
 

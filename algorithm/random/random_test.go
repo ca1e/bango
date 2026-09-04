@@ -146,6 +146,123 @@ func TestRandomBlocksOpenThreeNearEndFirst(t *testing.T) {
 	}
 }
 
+// TestRandomCompletesOwnFourFirst: 两层搜索·第一层 — the engine's own four
+// is completed for the immediate win, ahead of every defense: even while the
+// opponent threatens an open three or an open four, the five point is played.
+func TestRandomCompletesOwnFourFirst(t *testing.T) {
+	const n = 9
+	cases := []struct {
+		name   string
+		stones map[[2]int]int
+		want   [2]int
+	}{
+		{
+			name: "rush four 冲四, opponent open three waits",
+			stones: map[[2]int]int{
+				{1, 2}: 2,                                  // opponent caps the west end
+				{2, 2}: 1, {3, 2}: 1, {4, 2}: 1, {5, 2}: 1, // own four, five point east
+				{3, 6}: 2, {4, 6}: 2, {5, 6}: 2, // opponent open three (would be blocked without this layer)
+			},
+			want: [2]int{6, 2},
+		},
+		{
+			name: "jump four 跳四, the gap wins",
+			stones: map[[2]int]int{
+				{1, 2}: 2,
+				{2, 2}: 1, {3, 2}: 1, {4, 2}: 1, {6, 2}: 1, // x.xxx, gap at (5,2)
+				{7, 7}: 2,
+			},
+			want: [2]int{5, 2},
+		},
+		{
+			name: "own four outranks the opponent's open four",
+			stones: map[[2]int]int{
+				{1, 2}: 2,
+				{2, 2}: 1, {3, 2}: 1, {4, 2}: 1, {5, 2}: 1,
+				{2, 6}: 2, {3, 6}: 2, {4, 6}: 2, {5, 6}: 2, // opponent open four!
+			},
+			want: [2]int{6, 2},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newWithRand(rand.New(rand.NewSource(21)))
+			for i := 0; i < 50; i++ {
+				x, y := a.Think(buildReq(n, tc.stones, [2]int{5, 6}, true))
+				if x != tc.want[0] || y != tc.want[1] {
+					t.Fatalf("draw %d: answered at (%d,%d), want the own five point (%d,%d)",
+						i, x, y, tc.want[0], tc.want[1])
+				}
+			}
+		})
+	}
+}
+
+// TestRandomBlocksJumpOpenThree: 两层搜索·第二层 — 跳活三 (.xx.x. / .x.xx. with
+// both outer cells empty) is invisible to the contiguous-run check; the gap
+// must be taken so the shape dies before it becomes a live four.
+func TestRandomBlocksJumpOpenThree(t *testing.T) {
+	const n = 9
+	cases := []struct {
+		name   string
+		stones map[[2]int]int
+		last   [2]int
+		want   [2]int
+	}{
+		{
+			name:   "horizontal .xx.x.",
+			stones: map[[2]int]int{{0, 0}: 1, {2, 4}: 2, {3, 4}: 2, {5, 4}: 2},
+			last:   [2]int{5, 4},
+			want:   [2]int{4, 4},
+		},
+		{
+			name:   "horizontal .x.xx.",
+			stones: map[[2]int]int{{0, 0}: 1, {2, 4}: 2, {4, 4}: 2, {5, 4}: 2},
+			last:   [2]int{5, 4},
+			want:   [2]int{3, 4},
+		},
+		{
+			name:   "diagonal .xx.x.",
+			stones: map[[2]int]int{{0, 8}: 1, {3, 3}: 2, {4, 4}: 2, {6, 6}: 2},
+			last:   [2]int{6, 6},
+			want:   [2]int{5, 5},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newWithRand(rand.New(rand.NewSource(22)))
+			for i := 0; i < 50; i++ {
+				x, y := a.Think(buildReq(n, tc.stones, tc.last, true))
+				if x != tc.want[0] || y != tc.want[1] {
+					t.Fatalf("draw %d: jump open three answered at (%d,%d), want the gap (%d,%d)",
+						i, x, y, tc.want[0], tc.want[1])
+				}
+			}
+		})
+	}
+}
+
+// TestRandomPrefersFivePointOverJumpThree: the layers keep their order — a
+// jump four (an immediate five threat) through the last move is answered
+// before a jump open three crossing the same stone.
+func TestRandomPrefersFivePointOverJumpThree(t *testing.T) {
+	const n = 9
+	a := newWithRand(rand.New(rand.NewSource(23)))
+	stones := map[[2]int]int{
+		{0, 0}: 1,
+		// row 4: jump four x.xxx through L=(6,4), five point (5,4)
+		{2, 4}: 2, {3, 4}: 2, {4, 4}: 2, {6, 4}: 2,
+		// column 6: jump open three .x.xx. through the same L, gap (6,3)
+		{6, 2}: 2, {6, 5}: 2,
+	}
+	for i := 0; i < 50; i++ {
+		x, y := a.Think(buildReq(n, stones, [2]int{6, 4}, true))
+		if x != 5 || y != 4 {
+			t.Fatalf("draw %d: answered at (%d,%d), want the jump four's gap (5,4)", i, x, y)
+		}
+	}
+}
+
 // TestRandomPlaysOnlyAtMinimumDistance: in the plain random phase every
 // reply must sit in the ring at minimum Chebyshev distance from the last
 // move — never one ring further out.
