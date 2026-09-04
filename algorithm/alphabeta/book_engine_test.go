@@ -1,6 +1,7 @@
 package alphabeta
 
 import (
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -262,5 +263,81 @@ func TestTranslatedFallbackClassicOnly(t *testing.T) {
 		if !s.classicOpeningPoint(y*15 + x) {
 			t.Fatalf("black1 %v: reply (%d,%d) is not a contact/knight development", black1, x, y)
 		}
+	}
+}
+
+// TestTengenReplyBalancedFamilies: the single-tengen-stone reply pool must
+// carry BOTH classic families — direct (orthogonal neighbour) and diagonal —
+// at equal top weight, and the adoption draw must actually pick each family
+// about half the time. The old weight-order pick always played diagonal
+// (self-play: 2529/2529 tengen replies diagonal, ~96.6% of them lost).
+func TestTengenReplyBalancedFamilies(t *testing.T) {
+	defaults := book.LoadDefaultBooks()
+	if defaults == nil {
+		t.Fatal("default adoption book did not load")
+	}
+	b := make([]int, 225)
+	b[7*15+7] = playerOpp // engine is white, black opened at the tengen
+	s := newSearcher(15, b, 0)
+	s.setRule(RuleFreestyle, playerOpp)
+	s.book = defaults
+
+	cands := s.bookCandidates()
+	if len(cands) < 2 {
+		t.Fatalf("tengen reply pool has %d candidates, want both families", len(cands))
+	}
+	direct, diag := 0, 0
+	for _, c := range cands {
+		dx, dy := c.Move%15-7, c.Move/15-7
+		switch {
+		case dx == 0 || dy == 0:
+			direct++
+		case dx != 0 && dy != 0:
+			diag++
+		}
+	}
+	if direct == 0 || diag == 0 {
+		t.Fatalf("unbalanced pool: %d direct, %d diagonal", direct, diag)
+	}
+	// after rebalance the pool tops out at one shared weight level holding
+	// both families: every candidate at the max weight must not be a single
+	// family
+	top := cands[0].Weight
+	fams := map[bool]bool{} // true = direct
+	for _, c := range cands {
+		if c.Weight != top {
+			break
+		}
+		dx, dy := c.Move%15-7, c.Move/15-7
+		fams[dx == 0 || dy == 0] = true
+	}
+	if !fams[true] || !fams[false] {
+		t.Fatalf("top weight level %d holds only one family: %v", top, fams)
+	}
+
+	// the draw: fresh RNG per draw over the rebalanced pool — mirrors the
+	// adoption path's weighted pick without running a full search each time
+	directPicks, diagPicks := 0, 0
+	for i := 0; i < 200; i++ {
+		draw := rand.New(rand.NewSource(int64(i))).Intn(cands[0].Weight * len(cands))
+		acc := 0
+		var pick book.Candidate
+		for _, c := range cands {
+			acc += c.Weight
+			if draw < acc {
+				pick = c
+				break
+			}
+		}
+		dx, dy := pick.Move%15-7, pick.Move/15-7
+		if dx == 0 || dy == 0 {
+			directPicks++
+		} else {
+			diagPicks++
+		}
+	}
+	t.Logf("200 draws: %d direct, %d diagonal", directPicks, diagPicks)
+	if directPicks < 60 || diagPicks < 60 {
+		t.Fatalf("draw not balanced: %d direct, %d diagonal of 200", directPicks, diagPicks)
 	}
 }

@@ -228,10 +228,17 @@ func TestProtocolTurnOccupied(t *testing.T) {
 		t.Fatalf("board after refused TURN/PLAY has %d X / %d O, want 1/1", xs, os)
 	}
 
-	// the engine stays fully functional and avoids both taken cells
-	s.send("TURN 7,8")
+	// the engine stays fully functional and avoids both taken cells. The
+	// probe cell must not collide with the engine's first reply, which since
+	// the tengen-reply diversification can be any neighbour of (7,7) —
+	// direct or diagonal — so probe from the far side, filtered against fx,fy.
+	probe := [2]int{7, 8}
+	if probe == [2]int{fx, fy} {
+		probe = [2]int{7, 6}
+	}
+	s.send(fmt.Sprintf("TURN %d,%d", probe[0], probe[1]))
 	x, y := expectMove(t, s, 5*time.Second, 15)
-	if (x == 7 && y == 7) || (x == fx && y == fy) {
+	if (x == 7 && y == 7) || (x == fx && y == fy) || (x == probe[0] && y == probe[1]) {
 		t.Fatalf("reply (%d,%d) landed on an occupied cell", x, y)
 	}
 
@@ -644,8 +651,10 @@ func TestProtocolInfoMaxDepthMaxNode(t *testing.T) {
 		t.Fatalf("move (%d,%d) out of board under max_depth/max_node", x, y)
 	}
 
-	// a second move keeps working: the budget counters are per-think
-	s.send("TURN 8,8")
+	// a second move keeps working: the budget counters are per-think. The
+	// probe cell avoids the first reply — the tengen answer may now be any
+	// neighbour of (7,7), including the previously impossible (8,8).
+	s.send("TURN 9,9")
 	expectMove(t, s, 5*time.Second, 15)
 }
 

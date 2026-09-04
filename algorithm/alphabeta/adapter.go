@@ -41,6 +41,10 @@ type Algorithm struct {
 	bookFolder string
 	book       *book.Compiled
 	modeBook   *book.Compiled
+
+	// lastStats mirrors s.stats of the most recent Think; read via
+	// LastThinkStats (StatsProvider) by the engine's move logging.
+	lastStats algorithm.ThinkStats
 }
 
 // New creates the algorithm with empty per-game state.
@@ -92,6 +96,10 @@ func (a *Algorithm) booksFor(folder string) (adopted, mode *book.Compiled) {
 	return a.book, a.modeBook
 }
 
+// LastThinkStats implements algorithm.StatsProvider: the per-think search
+// statistics of the most recent Think.
+func (a *Algorithm) LastThinkStats() algorithm.ThinkStats { return a.lastStats }
+
 // Think implements algorithm.Algorithm: snapshot in, move out. Runs the
 // searcher without holding any engine lock (the Request is a private copy).
 func (a *Algorithm) Think(req algorithm.Request) (int, int) {
@@ -125,5 +133,7 @@ func (a *Algorithm) Think(req algorithm.Request) (int, int) {
 			s.smpWorkers = workers
 		}
 	}
-	return s.run(maxDepth, thinkBudget(req.TimeoutTurn, req.TimeLeft))
+	x, y := s.run(maxDepth, thinkBudget(req.TimeoutTurn, req.TimeLeft))
+	a.lastStats = s.stats
+	return x, y
 }

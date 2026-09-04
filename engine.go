@@ -268,6 +268,16 @@ func (e *Engine) aiMove() (int, int) {
 		}
 		return n / 2, n / 2
 	}
+	// BANGO_LOG=1: dump one machine-readable line per think to stderr —
+	// depth reached, root score, nodes, book/kill-search provenance. The
+	// self-play harness parses this to log per-move search statistics.
+	if os.Getenv("BANGO_LOG") == "1" {
+		if sp, ok := e.algo.(algorithm.StatsProvider); ok {
+			ts := sp.LastThinkStats()
+			fmt.Fprintf(os.Stderr, "THINK depth=%d score=%d nodes=%d aborted=%t book=%s kill=%s killply=%d ms=%d move=%d,%d\n",
+				ts.Depth, ts.Score, ts.Nodes, ts.Aborted, ts.Book, ts.KillKind, ts.KillPly, ts.ElapsedMS, x, y)
+		}
+	}
 	return x, y
 }
 

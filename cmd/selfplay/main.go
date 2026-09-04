@@ -28,6 +28,17 @@ type moveRec struct {
 	X  int    `json:"x"`
 	Y  int    `json:"y"`
 	MS int64  `json:"ms"` // wall time from TURN/BEGIN send to reply
+
+	// Search statistics from the engine's THINK stderr line (BANGO_LOG=1).
+	// Zero when the line was missing (older binary, BANGO_LOG off).
+	Depth   int    `json:"depth,omitempty"`
+	Score   int    `json:"score,omitempty"`
+	Nodes   int    `json:"nodes,omitempty"`
+	Aborted bool   `json:"aborted,omitempty"`
+	Book    string `json:"book,omitempty"`
+	Kill    string `json:"kill,omitempty"`
+	KillPly int    `json:"killply,omitempty"`
+	ThinkMS int64  `json:"think_ms,omitempty"`
 }
 
 type gameRec struct {
@@ -48,20 +59,38 @@ type engineProc struct {
 	stdin io.WriteCloser
 	lines chan string
 	err   chan error
+	// thinks collects THINK stderr lines (one per engine move); the stderr
+	// reader goroutine appends while playGame drains, so access is guarded.
+	thinkMu sync.Mutex
+	thinks  []string
+}
+
+// addThink records one THINK line (called from the stderr reader goroutine).
+func (e *engineProc) addThink(line string) {
+	e.thinkMu.Lock()
+	e.thinks = append(e.thinks, line)
+	e.thinkMu.Unlock()
+}
+
+// lastThinkAndClear returns the newest THINK line and empties the buffer.
+func (e *engineProc) lastThinkAndClear() (string, bool) {
+	e.thinkMu.Lock()
+	defer e.thinkMu.Unlock()
+	if len(e.thinks) == 0 {
+		return "", false
+	}
+	line := e.thinks[len(e.thinks)-1]
+	e.thinks = e.thinks[:0]
+	return line, true
 }
 
 func startEngine(path, label string) (*engineProc, error) {
 	cmd := exec.Command(path)
+	cmd.Env = append(os.Environ(), "BANGO_LOG=1")
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, err
 	}
-	go func() {
-		sc := bufio.NewScanner(stderr)
-		for sc.Scan() {
-			fmt.Fprintf(os.Stderr, "[%s] %s\n", label, sc.Text())
-		}
-	}()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -74,6 +103,14 @@ func startEngine(path, label string) (*engineProc, error) {
 		return nil, err
 	}
 	e := &engineProc{name: label, cmd: cmd, stdin: stdin, lines: make(chan string, 32), err: make(chan error, 1)}
+	go func() {
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			if line := sc.Text(); strings.HasPrefix(line, "THINK ") {
+				e.addThink(line)
+			}
+		}
+	}()
 	go func() {
 		r := bufio.NewReader(stdout)
 		for {
@@ -113,6 +150,45 @@ func (e *engineProc) stop() {
 	_ = e.stdin.Close()
 	_ = e.cmd.Process.Kill()
 	_ = e.cmd.Wait()
+}
+
+// atoi is strconv.Atoi with the error collapsed to 0: THINK fields that fail
+// to parse simply read as zero.
+func atoi(s string) int {
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// parseThink fills mr's search-statistic fields from one THINK stderr line:
+// THINK depth=4 score=120 nodes=8123 aborted=false book= kill= killply=0 ms=95 move=7,7
+func parseThink(line string, mr *moveRec) {
+	for _, f := range strings.Fields(line) {
+		k, v, found := strings.Cut(f, "=")
+		if !found {
+			continue
+		}
+		switch k {
+		case "depth":
+			mr.Depth = atoi(v)
+		case "score":
+			mr.Score = atoi(v)
+		case "nodes":
+			mr.Nodes = atoi(v)
+		case "aborted":
+			mr.Aborted = v == "true"
+		case "book":
+			mr.Book = v
+		case "kill":
+			mr.Kill = v
+		case "killply":
+			mr.KillPly = atoi(v)
+		case "ms":
+			mr.ThinkMS = int64(atoi(v))
+		}
+	}
 }
 
 func parseCoords(s string) (int, int, bool) {
@@ -257,7 +333,13 @@ func playGame(id int, seed int64, path string, blackIsA bool, n, tt, maxPlies in
 		}
 		board[y*n+x] = side
 		prev = [2]int{x, y}
-		rec.Moves = append(rec.Moves, moveRec{N: plies + 1, S: col, X: x, Y: y, MS: ms})
+		mr := moveRec{N: plies + 1, S: col, X: x, Y: y, MS: ms}
+		// attach the engine's own search statistics: THINK lines arrive one
+		// per move in order; the newest one belongs to this reply
+		if think, ok := e.lastThinkAndClear(); ok {
+			parseThink(think, &mr)
+		}
+		rec.Moves = append(rec.Moves, mr)
 		rec.Plies = plies + 1
 		if fiveAt(board, n, x, y) {
 			rec.Winner, rec.Reason = col, "five"

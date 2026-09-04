@@ -60,6 +60,28 @@ type Request struct {
 	LastX, LastY int
 }
 
+// ThinkStats describes one completed think: what the search actually did,
+// for self-play logging and engine diagnostics.
+type ThinkStats struct {
+	Depth     int    // deepest fully completed ladder iteration (0 = tactical shortcut)
+	Score     int    // root score of that iteration (before the kill search)
+	Nodes     int    // main-search nodes (excludes kill-search nodes)
+	Aborted   bool   // ladder hit the deadline or node limit mid-depth
+	Book      string // "" | "adopt" (book move played) | "order" (book biased ordering)
+	KillKind  string // "" | "vcf" | "vct" | "block": kill-search provenance of the move
+	KillPly   int    // plies of the proven kill sequence (0 when none)
+	ElapsedMS int64  // wall time of the whole think
+	Move      string // the move played, "x,y"
+}
+
+// StatsProvider is implemented by algorithms that can report per-think
+// search statistics. The engine type-asserts it after every Think to log
+// what the search actually did (self-play diagnostics).
+type StatsProvider interface {
+	// LastThinkStats returns the statistics of the most recent Think call.
+	LastThinkStats() ThinkStats
+}
+
 // Algorithm is the move-strategy interface every engine algorithm implements.
 //
 // Contract:

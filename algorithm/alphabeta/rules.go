@@ -210,6 +210,16 @@ func (s *searcher) bookCandidates() []book.Candidate {
 		// they bias ordering but must not be adopted outright (arena: the
 		// weight-ordered pick measured 26:34 against the search choice)
 		s.bookViaTranslation = len(cands) > 0
+		// tengen reply diversification: weight order alone makes the
+		// single-tengen-stone reply deterministic — every source line's
+		// diagonal offset outweighs the direct one, so white answered the
+		// tengen diagonally 2529/2529 times and lost ~97% of those games.
+		// The 26-mode theory treats direct and diagonal replies as equally
+		// classic; rebalance to 50/50 so the defender varies (self-play
+		// 2026-09: the fixed diagonal main line was losing ~96.6%).
+		if len(cands) > 1 && s.isTengenReply() {
+			rebalanceTengenReply(cands, s.n)
+		}
 	}
 	if len(cands) == 0 {
 		return nil
@@ -228,6 +238,54 @@ func (s *searcher) bookCandidates() []book.Candidate {
 		out = append(out, c)
 	}
 	return out
+}
+
+// isTengenReply reports whether the current position is exactly one black
+// stone on the tengen — the single-stone reply the engine must diversify.
+func (s *searcher) isTengenReply() bool {
+	n := s.n
+	c := n / 2
+	for p, v := range s.b {
+		if p == c*n+c {
+			if v != s.blackSide {
+				return false
+			}
+			continue
+		}
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// rebalanceTengenReply equalizes the two reply families (direct and diagonal
+// neighbours of the tengen) so the family choice is a coin flip, not a
+// weight-order default. Family membership is geometric: |dx|+|dy| == 1 is a
+// direct reply, |dx|==1 && |dy|==1 diagonal (dx,dy relative to the tengen).
+// Within a family the original weight order is preserved.
+func rebalanceTengenReply(cands []book.Candidate, n int) {
+	c := n / 2
+	for i := range cands {
+		dx, dy := cands[i].Move%n-c, cands[i].Move/n-c
+		if dx < 0 {
+			dx = -dx
+		}
+		if dy < 0 {
+			dy = -dy
+		}
+		if dx+dy == 1 { // direct family: lift to the diagonal family's level
+			cands[i].Weight = cands[0].Weight
+		}
+	}
+	// restore weight order: the lifted candidates must sit at the top with
+	// the diagonals, keeping within-family order stable
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].Weight != cands[j].Weight {
+			return cands[i].Weight > cands[j].Weight
+		}
+		return cands[i].Move < cands[j].Move
+	})
 }
 
 // openThreatAt reports whether placing side's stone on p would create a

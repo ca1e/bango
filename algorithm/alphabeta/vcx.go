@@ -50,6 +50,7 @@ type killSearch struct {
 type vcxResult struct {
 	move int
 	ply  int
+	kind string // "vcf" or "vct": which probe proved it (stats reporting)
 }
 
 // runKillSearch probes VCF then VCT after the main search. Returns the first
@@ -65,6 +66,7 @@ func (s *searcher) runKillSearch(deadline time.Time) int {
 	// deadline, so a VCF timeout leaves nothing for VCT either
 	ks.onlyFour = true
 	if r := ks.search(playerMe, vcfDepth); r != nil {
+		s.stats.KillKind, s.stats.KillPly = r.kind, r.ply
 		return r.move
 	}
 	if ks.timedOut {
@@ -72,6 +74,7 @@ func (s *searcher) runKillSearch(deadline time.Time) int {
 	}
 	ks.onlyFour = false
 	if r := ks.search(playerMe, vctDepth); r != nil {
+		s.stats.KillKind, s.stats.KillPly = r.kind, r.ply
 		return r.move
 	}
 	return -1
@@ -129,6 +132,14 @@ func (s *searcher) runOppKillProbe(deadline time.Time) int {
 	return -1
 }
 
+// proofKind reports which probe is running: VCF (fours only) or VCT.
+func (ks *killSearch) proofKind() string {
+	if ks.onlyFour {
+		return "vcf"
+	}
+	return "vct"
+}
+
 // passDeadline reports whether the proof may continue. Checked on every node:
 // node costs here are microseconds, so the clock read is noise, and latching
 // timedOut lets every caller unwind without waiting for the next check.
@@ -162,17 +173,17 @@ func (ks *killSearch) search(attacker, deep int) *vcxResult {
 	}
 	// a five point ends the proof immediately
 	if ks.s.winsMove(moves[0].p, attacker) {
-		return &vcxResult{move: moves[0].p, ply: 1}
+		return &vcxResult{move: moves[0].p, ply: 1, kind: ks.proofKind()}
 	}
 
 	for _, m := range moves {
 		ks.s.makeMove(m.p, attacker)
 		var r *vcxResult
 		if ks.s.winsMove(m.p, attacker) {
-			r = &vcxResult{move: m.p, ply: 1}
+			r = &vcxResult{move: m.p, ply: 1, kind: ks.proofKind()}
 		} else if !ks.defends(3-attacker, deep-1) {
 			// every defence failed: this attack wins
-			r = &vcxResult{move: m.p, ply: 2}
+			r = &vcxResult{move: m.p, ply: 2, kind: ks.proofKind()}
 		}
 		ks.s.undoMove(m.p, attacker)
 		if ks.timedOut {

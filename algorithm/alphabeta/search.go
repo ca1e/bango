@@ -1,7 +1,10 @@
 package alphabeta
 
 import (
+	"fmt"
+	"gomoku/algorithm"
 	"gomoku/book"
+	"math/rand"
 	"os"
 	"sort"
 	"time"
@@ -102,6 +105,8 @@ type searcher struct {
 	nodes              int
 	abCuts             int
 	aborted            bool
+	stats              algorithm.ThinkStats // per-think observability, filled by runSingle
+	tengenRand         *rand.Rand           // draws the direct/diagonal tengen reply; nil = deterministic
 }
 
 // newSearcher prepares the per-think search state: Zobrist codes for the
@@ -133,6 +138,11 @@ func newSearcherWithTT(n int, b []int, maxMemory int64, tt *transTable) *searche
 		posEnabled:       os.Getenv("BANGO_POS") == "1",
 		openPriorEnabled: os.Getenv("BANGO_OPENPRIOR") != "0",
 		blackSide:        playerMe, // books and forbidden checks key off this
+	}
+	// tengen reply diversification: the direct/diagonal coin flip (2026-09;
+	// BANGO_TENGEN_RAND=0 restores the deterministic weight-order pick)
+	if os.Getenv("BANGO_TENGEN_RAND") != "0" {
+		s.tengenRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 	s.history = [2][]int32{make([]int32, n*n), make([]int32, n*n)}
 	s.lineBuf2 = make([]int, n)
@@ -370,7 +380,12 @@ func (s *searcher) runSMP(maxDepth int, budget time.Duration) (int, int) {
 // runSingle is the original single-threaded move decision; see run.
 func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 	n := s.n
+	thinkStart := time.Now()
+	defer func() {
+		s.stats.ElapsedMS = time.Since(thinkStart).Milliseconds()
+	}()
 	if s.stoneCount() == 0 {
+		s.stats.Move = fmt.Sprintf("%d,%d", n/2, n/2)
 		return n / 2, n / 2 // empty board: play the center (天元)
 	}
 
@@ -394,11 +409,15 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 	// winsMove applies the active rule (exact five / caro ends / renju).
 	for _, m := range moves {
 		if s.winsMove(m, playerMe) {
+			s.stats.Move = fmt.Sprintf("%d,%d", m%n, m/n)
+			s.stats.Score = winScore
 			return m % n, m / n
 		}
 	}
 	for _, m := range moves {
 		if s.winsMove(m, playerOpp) {
+			s.stats.Move = fmt.Sprintf("%d,%d", m%n, m/n)
+			s.stats.Depth = 0
 			return m % n, m / n
 		}
 	}
@@ -411,8 +430,30 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 		// displacement-fallback candidates only bias ordering: the search
 		// picks the actual first reply among the prior's classic cells
 		if !s.hasOpenThreat() && !s.bookViaTranslation {
+			pick := cands[0].Move
+			// rebalanced tengen pool: the direct and diagonal families carry
+			// equal weight, so the reply is a weighted coin flip between
+			// them instead of the weight-order default (always diagonal)
+			if s.tengenRand != nil && s.isTengenReply() {
+				total := 0
+				for _, c := range cands {
+					total += c.Weight
+				}
+				if total > 0 {
+					draw := s.tengenRand.Intn(total)
+					for _, c := range cands {
+						draw -= c.Weight
+						if draw < 0 {
+							pick = c.Move
+							break
+						}
+					}
+				}
+			}
 			s.bookAdopted++
-			return cands[0].Move % n, cands[0].Move / n
+			s.stats.Move = fmt.Sprintf("%d,%d", pick%n, pick/n)
+			s.stats.Book = "adopt"
+			return pick % n, pick / n
 		}
 		s.applyBookOrdering(cands, moves)
 	}
@@ -503,7 +544,6 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 			break // forced win found, no deeper search needed
 		}
 	}
-
 	// kill search (tutorial ch.8): when the full search found no forced win,
 	// probe VCF/VCT for a deep forcing sequence the narrow search missed.
 	// A win the main search itself proved is kept as-is — the kill search's
@@ -512,12 +552,14 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 	// ladder already spent its share, so the kills get whatever remains and
 	// can never push the move past the budget (the old per-stage fractions
 	// "now + budget/4" stacked on top and let a move run unbounded).
+	s.stats.Depth, s.stats.Score, s.stats.Nodes, s.stats.Aborted = s.lastDepth, prevScore, s.nodes, s.aborted
 	if prevScore < winScore-64 {
 		if r := s.runKillSearch(s.deadline); r >= 0 {
+			s.stats.Move = fmt.Sprintf("%d,%d", r%n, r/n)
 			return r % n, r / n
 		}
 		// opponent kill probe (reference candidateMinmax net): a proven
-		// opponent forcing win outranks the search's quiet choice — occupy
+		// opponent forcing win outranks the main search's quiet choice — occupy
 		// its principal threat point when the block verifiably holds.
 		// Gate: only when the ladder itself reads danger (prevScore < 0).
 		// A completed-depth ladder that still likes the position outvoted
@@ -527,10 +569,13 @@ func (s *searcher) runSingle(maxDepth int, budget time.Duration) (int, int) {
 		// 14% of its games, the ladder's (6,5) 93%; kept the ladder instead).
 		if prevScore < 0 {
 			if r := s.runOppKillProbe(s.deadline); r >= 0 {
+				s.stats.Move = fmt.Sprintf("%d,%d", r%n, r/n)
+				s.stats.KillKind, s.stats.KillPly = "block", s.lastDepth
 				return r % n, r / n
 			}
 		}
 	}
+	s.stats.Move = fmt.Sprintf("%d,%d", best%n, best/n)
 	return best % n, best / n
 }
 
